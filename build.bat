@@ -20,6 +20,7 @@ set "ENGINE_SRCS=engine\session.cpp engine\gpu.cpp engine\ngx.cpp engine\composi
 
 if "%~1"=="" goto plugin
 if /I "%~1"=="engine" goto engine
+if /I "%~1"=="forwarder" goto forwarder
 if /I "%~1"=="plugin" goto plugin
 if /I "%~1"=="aex" goto aex
 if /I "%~1"=="selftest" goto selftest
@@ -28,11 +29,12 @@ echo Unknown target %~1
 goto help
 
 :help
-echo Usage: build.bat [engine ^| plugin ^| aex ^| selftest]
-echo   engine    build dist\engine\dlssnr2fx.dll
-echo   plugin    build OFX bundle and copy the engine beside the plug-in
-echo   aex       build After Effects plug-in and copy the engine into dist\aex
-echo   selftest  build/run the in-process engine and pixel conversion tests
+echo Usage: build.bat [engine ^| forwarder ^| plugin ^| aex ^| selftest]
+echo   engine     build dist\engine\dlssnr2fx.dll ^(also builds the forwarder^)
+echo   forwarder  build dist\engine\nvngx.dll_dlssnr.dll and copy into runtime\
+echo   plugin     build OFX bundle and copy the engine beside the plug-in
+echo   aex        build After Effects plug-in and copy the engine into dist\aex
+echo   selftest   build/run the in-process engine and pixel conversion tests
 exit /b 0
 
 :engine
@@ -42,6 +44,27 @@ if errorlevel 1 exit /b 1
 del /q *.obj dist\engine\dlssnr2fx.lib dist\engine\dlssnr2fx.exp 2>nul
 echo Built dist\engine\dlssnr2fx.dll
 dumpbin /exports dist\engine\dlssnr2fx.dll | findstr /C:"nr_eval" /C:"nr_cancel" /C:"nr_shutdown"
+if errorlevel 1 exit /b 1
+cl %CFLAGS% /D DLSSNR2FX_EXPORTS engine\forwarder.cpp /LD /Fe:dist\engine\nvngx.dll_dlssnr.dll /link kernel32.lib
+if errorlevel 1 exit /b 1
+mkdir runtime 2>nul
+copy /Y dist\engine\nvngx.dll_dlssnr.dll runtime\nvngx.dll_dlssnr.dll >nul
+if errorlevel 1 exit /b 1
+del /q *.obj dist\engine\nvngx.dll_dlssnr.lib dist\engine\nvngx.dll_dlssnr.exp 2>nul
+echo Built dist\engine\nvngx.dll_dlssnr.dll, copied to runtime\nvngx.dll_dlssnr.dll
+dumpbin /exports dist\engine\nvngx.dll_dlssnr.dll | findstr /C:"fwd_create" /C:"fwd_evaluate" /C:"fwd_release" /C:"fwd_set_slots"
+exit /b %ERRORLEVEL%
+
+:forwarder
+mkdir dist\engine 2>nul
+cl %CFLAGS% /D DLSSNR2FX_EXPORTS engine\forwarder.cpp /LD /Fe:dist\engine\nvngx.dll_dlssnr.dll /link kernel32.lib
+if errorlevel 1 exit /b 1
+mkdir runtime 2>nul
+copy /Y dist\engine\nvngx.dll_dlssnr.dll runtime\nvngx.dll_dlssnr.dll >nul
+if errorlevel 1 exit /b 1
+del /q *.obj dist\engine\nvngx.dll_dlssnr.lib dist\engine\nvngx.dll_dlssnr.exp 2>nul
+echo Built dist\engine\nvngx.dll_dlssnr.dll, copied to runtime\nvngx.dll_dlssnr.dll
+dumpbin /exports dist\engine\nvngx.dll_dlssnr.dll | findstr /C:"fwd_create" /C:"fwd_evaluate" /C:"fwd_release" /C:"fwd_set_slots"
 exit /b %ERRORLEVEL%
 
 :plugin

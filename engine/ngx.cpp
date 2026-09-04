@@ -51,21 +51,29 @@ HMODULE LoadDriverCore(bool& owned, std::wstring& loadedPath) {
   wchar_t system[MAX_PATH]{};
   if (!GetSystemDirectoryW(system, MAX_PATH)) return nullptr;
   const std::wstring root = std::wstring(system) + L"\\DriverStore\\FileRepository";
-  WIN32_FIND_DATAW data{};
-  HANDLE find = FindFirstFileW((root + L"\\nv_dispsi.inf_amd64_*").c_str(), &data);
-  if (find == INVALID_HANDLE_VALUE) return nullptr;
-  do {
-    if (!(data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
-    const std::wstring candidate = root + L"\\" + data.cFileName + L"\\nvngx.dll";
-    if (!FileExists(candidate)) continue;
-    module = LoadLibraryExW(candidate.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
-    if (module) {
-      owned = true;
-      loadedPath = candidate;
-      break;
-    }
-  } while (FindNextFileW(find, &data));
-  FindClose(find);
+  // Driver store layout has changed across driver generations: older packages keep
+  // nvngx.dll under nv_dispsi.inf_amd64_*, current ones under nv_dispi.inf_amd64_*
+  // (and Game Ready bundles may use nv_dispig.inf_amd64_*).  Try each prefix and pick
+  // the first module that loads.
+  const wchar_t* const kPrefixes[] = {L"nv_dispi", L"nv_dispsi", L"nv_dispig"};
+  for (const wchar_t* prefix : kPrefixes) {
+    WIN32_FIND_DATAW data{};
+    HANDLE find = FindFirstFileW((root + L"\\" + prefix + L".inf_amd64_*").c_str(), &data);
+    if (find == INVALID_HANDLE_VALUE) continue;
+    do {
+      if (!(data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
+      const std::wstring candidate = root + L"\\" + data.cFileName + L"\\nvngx.dll";
+      if (!FileExists(candidate)) continue;
+      module = LoadLibraryExW(candidate.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
+      if (module) {
+        owned = true;
+        loadedPath = candidate;
+        FindClose(find);
+        return module;
+      }
+    } while (FindNextFileW(find, &data));
+    FindClose(find);
+  }
   return module;
 }
 
