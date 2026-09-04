@@ -1,0 +1,5 @@
+LIBRARY dlssnr2fx
+EXPORTS
+    nr_eval
+    nr_cancel
+    nr_shutdown

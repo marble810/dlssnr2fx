@@ -1,0 +1,30 @@
+# build outputs
+*.obj
+*.lib
+*.exp
+*.dll
+*.pdb
+*.ilk
+*.exe
+*.ofx
+*.aex
+dist/
+build/
+
+# downloaded runtime binaries
+runtime/
+
+# vendored OFX clone leftovers; headers under third_party/ofx/include are committed
+third_party/ofx_tmp/
+
+# local agent / planning / scratch
+.pi/
+openspec/
+context.md
+nul
+legacy/
+
+# test artifacts and downloaded SDKs
+nr_out/
+test/*.bmp
+AfterEffectsSDK_25.6_61_win/
