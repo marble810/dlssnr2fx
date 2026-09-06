@@ -1,9 +1,12 @@
 #include "../engine/dlssnr2fx.h"
 #include "../engine/composite.h"
+#include "../engine/frame_guidance.h"
+#include "../engine/mvec.h"
 #include "../engine/session_policy.h"
 
 #include <windows.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -86,6 +89,9 @@ int main() {
   if (eval(&d) != NR_ERR_MISSING_RUNTIME) return Fail("missing snippet status");
   DeleteFileW(forwarder.c_str()); RemoveDirectoryW(partial.c_str());
   d = MakeDesc(missing, input, output);
+  d.format = static_cast<nr_pixel_format>(99);
+  if (eval(&d) != NR_ERR_ARGS) return Fail("invalid pixel format status");
+  d.format = NR_PIX_RGBA8;
 
   d.instance_id = 200; d.request_id = 7;
   cancel(d.instance_id, d.request_id);
@@ -122,6 +128,63 @@ int main() {
   auto available = gate.LockFor(std::chrono::milliseconds(25));
   if (!available.owns_lock()) return Fail("session gate should recover after busy request");
 
+  if (DecideFrameGuidance(false, 0, 0, 1, 10, 1, false, false) != FrameGuidanceAction::Reset)
+    return Fail("frame guidance first eval resets");
+  if (DecideFrameGuidance(true, 1, 10, 1, 10, 1, false, true) != FrameGuidanceAction::Coalesce)
+    return Fail("frame guidance same key coalesces");
+  if (DecideFrameGuidance(true, 1, 10, 1, 11, 1, false, false) != FrameGuidanceAction::Continue)
+    return Fail("frame guidance next forward frame continues");
+  if (DecideFrameGuidance(true, 1, 10, 1, 12, 1, false, false) != FrameGuidanceAction::Reset)
+    return Fail("frame guidance skipped frame resets");
+  if (DecideFrameGuidance(true, 1, 10, 1, 9, 1, false, false) != FrameGuidanceAction::Reset)
+    return Fail("frame guidance reverse frame resets");
+  if (DecideFrameGuidance(true, 1, 10, 2, 11, 1, false, false) != FrameGuidanceAction::Reset)
+    return Fail("frame guidance instance change resets");
+  if (DecideFrameGuidance(true, 1, 10, 1, 11, 0, false, false) != FrameGuidanceAction::Reset)
+    return Fail("frame guidance missing step resets");
+  if (DecideFrameGuidance(true, 1, 10, 1, 10, 1, true, true) != FrameGuidanceAction::Coalesce)
+    return Fail("frame guidance coalesce wins over force reset");
+  if (DecideFrameGuidance(true, 1, 10, 1, 11, 1, false, false, FrameGuidanceMode::AlwaysReset) !=
+      FrameGuidanceAction::Reset)
+    return Fail("always-reset mode resets forward frames");
+  if (DecideFrameGuidance(true, 1, 10, 1, 12, 1, false, false, FrameGuidanceMode::Lock) !=
+      FrameGuidanceAction::Continue)
+    return Fail("lock mode keeps history across skipped frames");
+  if (DecideFrameGuidance(true, 1, 10, 1, 10, 1, false, true, FrameGuidanceMode::Auto, false) ==
+      FrameGuidanceAction::Coalesce)
+    return Fail("coalesce off must not coalesce");
+
+  {
+    constexpr int w = 32, h = 16;
+    std::vector<uint8_t> prev(static_cast<size_t>(w) * h * 4, 0);
+    std::vector<uint8_t> curr(prev.size(), 0);
+    for (int y = 0; y < h; ++y) {
+      for (int x = 0; x < w; ++x) {
+        const uint8_t v = static_cast<uint8_t>(x * 7 + y * 3);
+        const size_t pi = (static_cast<size_t>(y) * w + x) * 4;
+        prev[pi] = prev[pi + 1] = prev[pi + 2] = v;
+        prev[pi + 3] = 255;
+        const int sx = std::min(w - 1, x + 4);
+        const size_t ci = (static_cast<size_t>(y) * w + sx) * 4;
+        curr[ci] = curr[ci + 1] = curr[ci + 2] = v;
+        curr[ci + 3] = 255;
+      }
+    }
+    std::vector<float> xy;
+    EstimateMvecRgba8(curr.data(), prev.data(), w, h, xy);
+    if (xy.size() != static_cast<size_t>(w) * h * 2) return Fail("mvec size");
+    double ax = 0;
+    int n = 0;
+    for (int y = 2; y < h - 2; ++y) {
+      for (int x = 6; x < w - 6; ++x) {
+        ax += xy[(static_cast<size_t>(y) * w + x) * 2];
+        ++n;
+      }
+    }
+    ax /= n;
+    if (ax > -2.0 || ax < -6.0) return Fail("mvec current-to-previous sign/magnitude");
+  }
+
   const uint8_t orig[] = {10, 20, 30, 40, 200, 180, 160, 140};
   const uint8_t nr[] = {110, 120, 130, 255, 20, 40, 60, 255};
   uint8_t composite[sizeof(orig)]{};
@@ -133,6 +196,16 @@ int main() {
       return Fail("detail=1 composite RGB endpoint");
     if (composite[i * 4 + 3] != orig[i * 4 + 3]) return Fail("composite alpha preservation");
   }
+
+  const float origF[] = {1.0f / 32768.0f, 0.25f, 0.5f, 0.75f};
+  const float nrF[] = {0.9f, 0.8f, 0.7f, 1.0f};
+  float compositeF[4]{};
+  CompositeRgba32f(origF, nrF, compositeF, 1, 0.0f, 1.0f, false);
+  if (compositeF[0] != origF[0] || compositeF[3] != origF[3])
+    return Fail("RGBA32F detail=0 preserves sub-8bit original");
+  CompositeRgba32f(origF, nrF, compositeF, 1, 1.0f, 1.0f, false);
+  if (compositeF[0] != nrF[0] || compositeF[3] != origF[3])
+    return Fail("RGBA32F detail=1 RGB endpoint");
 
   const bool runGpu = GetEnvironmentVariableW(L"DLSSNR2FX_RUN_GPU", nullptr, 0) > 0;
   if (runGpu) {

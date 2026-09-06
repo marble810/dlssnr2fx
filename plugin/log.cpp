@@ -2,13 +2,14 @@
 
 #include <windows.h>
 
+#include "srw.h"
+
 #include <cstdarg>
 #include <cstdio>
-#include <mutex>
 
 namespace {
 
-std::mutex gLogMu;
+SRWLOCK gLogMu = SRWLOCK_INIT;
 char gLogPath[MAX_PATH] = {0};
 
 void EnsurePath() {
@@ -44,7 +45,7 @@ void Logf(const char* fmt, ...) {
            st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, GetCurrentThreadId(), msg);
 
   OutputDebugStringA(line);
-  std::lock_guard<std::mutex> lock(gLogMu);
+  SrwExclusive lock(gLogMu);
   FILE* f = nullptr;
   if (fopen_s(&f, gLogPath, "a") == 0 && f) {
     fputs(line, f);

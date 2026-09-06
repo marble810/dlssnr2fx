@@ -20,8 +20,12 @@ OfxStatus Describe(OfxImageEffectHandle effect) {
   gPropHost->propSetInt(props, kOfxImageEffectPropSupportsTiles, 0, 0);
   gPropHost->propSetInt(props, kOfxImageEffectPropSupportsMultiResolution, 0, 0);
   gPropHost->propSetInt(props, kOfxImageEffectPropSupportsMultipleClipDepths, 0, 0);
-  gPropHost->propSetInt(props, kOfxImageEffectPropTemporalClipAccess, 0, 0);
+  gPropHost->propSetInt(props, kOfxImageEffectPropTemporalClipAccess, 0, 1);
   gPropHost->propSetInt(props, kOfxImageEffectPluginPropFieldRenderTwiceAlways, 0, 0);
+  // Nuke renders OFX on worker threads. The in-process NGX session is process-global.
+  gPropHost->propSetString(props, kOfxImageEffectPluginRenderThreadSafety, 0,
+                           kOfxImageEffectRenderUnsafe);
+  gPropHost->propSetInt(props, kOfxImageEffectPluginPropHostFrameThreading, 0, 0);
 
   return kOfxStatOK;
 }
@@ -59,10 +63,26 @@ OfxStatus DescribeInContext(OfxImageEffectHandle effect, OfxPropertySetHandle in
   SetClipProps(clipProps);
   gEffectHost->clipDefine(effect, kOfxImageEffectOutputClipName, &clipProps);
   SetClipProps(clipProps);
+  gEffectHost->clipDefine(effect, kClipMVec, &clipProps);
+  SetClipProps(clipProps);
+  gPropHost->propSetInt(clipProps, kOfxImageClipPropOptional, 0, 1);
+  gEffectHost->clipDefine(effect, kClipDepth, &clipProps);
+  SetClipProps(clipProps);
+  gPropHost->propSetInt(clipProps, kOfxImageClipPropOptional, 0, 1);
 
   OfxParamSetHandle params;
   gEffectHost->getParamSet(effect, &params);
   OfxPropertySetHandle p = nullptr;
+
+  gParamHost->paramDefine(params, kOfxParamTypeChoice, kParamView, &p);
+  gPropHost->propSetString(p, kOfxPropLabel, 0, "View");
+  gPropHost->propSetString(p, kOfxParamPropChoiceOption, 0, "Final Image");
+  gPropHost->propSetString(p, kOfxParamPropChoiceOption, 1, "Source Image");
+  gPropHost->propSetString(p, kOfxParamPropChoiceOption, 2, "Depth Map");
+  gPropHost->propSetString(p, kOfxParamPropChoiceOption, 3, "Motion Vector Map");
+  gPropHost->propSetString(p, kOfxParamPropChoiceOption, 4, "Highlight Mask");
+  gPropHost->propSetInt(p, kOfxParamPropDefault, 0, 0);
+  FinishParam(p, "Preview final NR, the source, or the depth / motion / highlight maps actually used.", nullptr);
 
   gParamHost->paramDefine(params, kOfxParamTypeGroup, "grpLook", &p);
   gPropHost->propSetString(p, kOfxPropLabel, 0, "Look");
@@ -144,28 +164,110 @@ OfxStatus DescribeInContext(OfxImageEffectHandle effect, OfxPropertySetHandle in
   gParamHost->paramDefine(params, kOfxParamTypeBoolean, kParamHlShowMask, &p);
   gPropHost->propSetString(p, kOfxPropLabel, 0, "Show Mask");
   gPropHost->propSetInt(p, kOfxParamPropDefault, 0, 0);
-  FinishParam(p, "Preview the highlight mask (white = protected)", "grpHighlight");
+  gPropHost->propSetInt(p, kOfxParamPropSecret, 0, 1);
+  FinishParam(p, "Obsolete; use View = Highlight Mask", "grpHighlight");
 
-  gParamHost->paramDefine(params, kOfxParamTypeGroup, "grpMotion", &p);
-  gPropHost->propSetString(p, kOfxPropLabel, 0, "Motion");
-
-  gParamHost->paramDefine(params, kOfxParamTypeBoolean, kParamMotion, &p);
+  gParamHost->paramDefine(params, kOfxParamTypeGroup, "grpMVec", &p);
   gPropHost->propSetString(p, kOfxPropLabel, 0, "Motion Vectors");
-  gPropHost->propSetInt(p, kOfxParamPropDefault, 0, 0);
-  FinishParam(p, "Optical-flow motion for temporal NR. Off for stills.", "grpMotion");
 
-  gParamHost->paramDefine(params, kOfxParamTypeChoice, kParamMotionEngine, &p);
-  gPropHost->propSetString(p, kOfxPropLabel, 0, "Motion Engine");
-  gPropHost->propSetString(p, kOfxParamPropChoiceOption, 0, "Auto");
-  gPropHost->propSetString(p, kOfxParamPropChoiceOption, 1, "NVOF");
-  gPropHost->propSetString(p, kOfxParamPropChoiceOption, 2, "Lucas-Kanade");
-  gPropHost->propSetInt(p, kOfxParamPropDefault, 0, 0);
-  FinishParam(p, "auto / nvof (hardware) / lk", "grpMotion");
+  gParamHost->paramDefine(params, kOfxParamTypeChoice, kParamMvecSource, &p);
+  gPropHost->propSetString(p, kOfxPropLabel, 0, "Source");
+  gPropHost->propSetString(p, kOfxParamPropChoiceOption, 0, "Off");
+  gPropHost->propSetString(p, kOfxParamPropChoiceOption, 1, "Input");
+  gPropHost->propSetString(p, kOfxParamPropChoiceOption, 2, "Estimate (NVOF)");
+  gPropHost->propSetInt(p, kOfxParamPropDefault, 0, 2);
+  FinishParam(p, "Off = zeros. Input = MVec clip (RG). Estimate = NVIDIA Optical Flow, block-match fallback.",
+              "grpMVec");
 
-  gParamHost->paramDefine(params, kOfxParamTypeBoolean, kParamMotionVis, &p);
-  gPropHost->propSetString(p, kOfxPropLabel, 0, "Motion Visualize");
+  gParamHost->paramDefine(params, kOfxParamTypeChoice, kParamMvecDir, &p);
+  gPropHost->propSetString(p, kOfxPropLabel, 0, "Direction");
+  gPropHost->propSetString(p, kOfxParamPropChoiceOption, 0, "Current to Previous");
+  gPropHost->propSetString(p, kOfxParamPropChoiceOption, 1, "Previous to Current");
   gPropHost->propSetInt(p, kOfxParamPropDefault, 0, 0);
-  FinishParam(p, "Output flow visualisation instead of NR (debug)", "grpMotion");
+  FinishParam(p, "NR wants current-to-previous. Invert if the render pass is the other way.",
+              "grpMVec");
+
+  gParamHost->paramDefine(params, kOfxParamTypeChoice, kParamMvecUnit, &p);
+  gPropHost->propSetString(p, kOfxPropLabel, 0, "Units");
+  gPropHost->propSetString(p, kOfxParamPropChoiceOption, 0, "Pixels");
+  gPropHost->propSetString(p, kOfxParamPropChoiceOption, 1, "UV");
+  gPropHost->propSetInt(p, kOfxParamPropDefault, 0, 0);
+  FinishParam(p, "After Centered encoding: Pixels uses Range; UV uses ±half frame.", "grpMVec");
+
+  gParamHost->paramDefine(params, kOfxParamTypeChoice, kParamMvecEnc, &p);
+  gPropHost->propSetString(p, kOfxPropLabel, 0, "Encoding");
+  gPropHost->propSetString(p, kOfxParamPropChoiceOption, 0, "Centered 0.5 (AE)");
+  gPropHost->propSetString(p, kOfxParamPropChoiceOption, 1, "Signed 0=still");
+  gPropHost->propSetInt(p, kOfxParamPropDefault, 0, 0);
+  FinishParam(p, "AE cannot author negatives: 0.5=still, 0/1=±Range. Signed is EXR dx/dy in pixels.",
+              "grpMVec");
+
+  gParamHost->paramDefine(params, kOfxParamTypeDouble, kParamMvecRange, &p);
+  gPropHost->propSetString(p, kOfxPropLabel, 0, "Range (px)");
+  DoubleRange(p, 64.0, 1.0, 1024.0);
+  FinishParam(p, "Centered encoding: 0.5→1.0 maps to +Range pixels. 8-bit stays in 0-1.", "grpMVec");
+
+  gParamHost->paramDefine(params, kOfxParamTypeChoice, kParamNvofQuality, &p);
+  gPropHost->propSetString(p, kOfxPropLabel, 0, "NVOF Quality");
+  gPropHost->propSetString(p, kOfxParamPropChoiceOption, 0, "Slow");
+  gPropHost->propSetString(p, kOfxParamPropChoiceOption, 1, "Medium");
+  gPropHost->propSetString(p, kOfxParamPropChoiceOption, 2, "Fast");
+  gPropHost->propSetInt(p, kOfxParamPropDefault, 0, 1);
+  FinishParam(p, "NVIDIA Optical Flow preset. Slow = best, Fast = cheapest.", "grpMVec");
+
+  gParamHost->paramDefine(params, kOfxParamTypeBoolean, kParamNvofHint, &p);
+  gPropHost->propSetString(p, kOfxPropLabel, 0, "NVOF Temporal Hint");
+  gPropHost->propSetInt(p, kOfxParamPropDefault, 0, 1);
+  FinishParam(p, "Use previous flow as a hint. Turn off across cuts.", "grpMVec");
+
+  gParamHost->paramDefine(params, kOfxParamTypeGroup, "grpDepth", &p);
+  gPropHost->propSetString(p, kOfxPropLabel, 0, "Depth");
+
+  gParamHost->paramDefine(params, kOfxParamTypeChoice, kParamDepthSource, &p);
+  gPropHost->propSetString(p, kOfxPropLabel, 0, "Source");
+  gPropHost->propSetString(p, kOfxParamPropChoiceOption, 0, "Off");
+  gPropHost->propSetString(p, kOfxParamPropChoiceOption, 1, "Input");
+  gPropHost->propSetString(p, kOfxParamPropChoiceOption, 2, "Estimate (DAV2)");
+  gPropHost->propSetInt(p, kOfxParamPropDefault, 0, 2);
+  FinishParam(p, "Off = zeros. Input = Depth clip (R). Estimate = Depth Anything V2 if onnxruntime + model are present.",
+              "grpDepth");
+
+  gParamHost->paramDefine(params, kOfxParamTypeChoice, kParamDepthConv, &p);
+  gPropHost->propSetString(p, kOfxPropLabel, 0, "Convention");
+  gPropHost->propSetString(p, kOfxParamPropChoiceOption, 0, "Inverse (near=1)");
+  gPropHost->propSetString(p, kOfxParamPropChoiceOption, 1, "Linear (near=0)");
+  gPropHost->propSetInt(p, kOfxParamPropDefault, 0, 0);
+  FinishParam(p, "NR inverted depth is near=1. Linear Z is converted.", "grpDepth");
+
+  gParamHost->paramDefine(params, kOfxParamTypeInteger, kParamDav2Interval, &p);
+  gPropHost->propSetString(p, kOfxPropLabel, 0, "DAV2 Interval");
+  gPropHost->propSetInt(p, kOfxParamPropDefault, 0, 4);
+  gPropHost->propSetInt(p, kOfxParamPropMin, 0, 1);
+  gPropHost->propSetInt(p, kOfxParamPropMax, 0, 8);
+  FinishParam(p, "Run Depth Anything every N frames; hold otherwise.", "grpDepth");
+
+  gParamHost->paramDefine(params, kOfxParamTypeDouble, kParamDav2Ema, &p);
+  gPropHost->propSetString(p, kOfxPropLabel, 0, "DAV2 Temporal Blend");
+  DoubleRange(p, 0.70, 0.0, 0.95);
+  FinishParam(p, "EMA toward previous depth. 0 = raw inference.", "grpDepth");
+
+  gParamHost->paramDefine(params, kOfxParamTypeGroup, "grpFrameGuidance", &p);
+  gPropHost->propSetString(p, kOfxPropLabel, 0, "Frame Guidance");
+
+  gParamHost->paramDefine(params, kOfxParamTypeChoice, kParamFgMode, &p);
+  gPropHost->propSetString(p, kOfxPropLabel, 0, "Mode");
+  gPropHost->propSetString(p, kOfxParamPropChoiceOption, 0, "Always Reset");
+  gPropHost->propSetString(p, kOfxParamPropChoiceOption, 1, "Lock History");
+  gPropHost->propSetInt(p, kOfxParamPropDefault, 0, 1);
+  FinishParam(p,
+              "Always Reset: no temporal history. Lock History: keep history across frames.",
+              "grpFrameGuidance");
+
+  gParamHost->paramDefine(params, kOfxParamTypeBoolean, kParamFgCoalesce, &p);
+  gPropHost->propSetString(p, kOfxPropLabel, 0, "Coalesce Same Frame");
+  gPropHost->propSetInt(p, kOfxParamPropDefault, 0, 1);
+  FinishParam(p, "Skip NGX when the same instance renders the same frame again",
+              "grpFrameGuidance");
 
   gParamHost->paramDefine(params, kOfxParamTypeGroup, "grpAdvanced", &p);
   gPropHost->propSetString(p, kOfxPropLabel, 0, "Advanced");

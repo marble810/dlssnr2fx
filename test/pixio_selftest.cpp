@@ -68,6 +68,31 @@ void TestAex16BitRange() {
   std::vector<uint8_t> rgba;
   pix::PackRgba8(world, rgba, false);
   assert((rgba == std::vector<uint8_t>{255, 128, 0, 255}));
+
+  std::vector<float> rgbaF;
+  pix::PackRgba32f(world, rgbaF, false);
+  assert(rgbaF.size() == 4);
+  assert(rgbaF[0] == 1.f && rgbaF[3] == 1.f && rgbaF[2] == 0.f);
+  assert(rgbaF[1] > 0.499f && rgbaF[1] < 0.501f);
+}
+
+void TestAex16BitPassthroughIsExact() {
+  // 1/32768 vanishes if quantized through 8-bit; native copy must keep it.
+  uint16_t src[] = {32768, 1, 2, 3};
+  uint16_t dst[] = {0, 0, 0, 0};
+  auto srcWorld = AexWorld(reinterpret_cast<uint8_t*>(src), 1, 1, 8, 2);
+  auto dstWorld = AexWorld(reinterpret_cast<uint8_t*>(dst), 1, 1, 8, 2);
+  pix::CopyPassthrough(srcWorld, dstWorld);
+  assert(dst[0] == 32768 && dst[1] == 1 && dst[2] == 2 && dst[3] == 3);
+
+  std::vector<float> packed;
+  pix::PackRgba32f(srcWorld, packed, false);
+  assert(packed[0] > 0.f);  // R = 1/32768, not crushed to 0
+  uint16_t roundTrip[] = {0, 0, 0, 0};
+  auto outWorld = AexWorld(reinterpret_cast<uint8_t*>(roundTrip), 1, 1, 8, 2);
+  pix::UnpackRgba32f(outWorld, packed, false);
+  assert(roundTrip[0] == 32768 && roundTrip[1] == 1 && roundTrip[2] == 2 && roundTrip[3] == 3);
+  assert(pix::PackAsFloat(srcWorld));
 }
 
 void TestHighlightProtectionWithAexArgb() {
@@ -88,11 +113,37 @@ void TestHighlightProtectionWithAexArgb() {
 
 }  // namespace
 
+void TestPackMvecAndDepth() {
+  uint8_t src[] = {255, 255, 128, 0};  // A=1, R=1, G=0.5, B=0 -> mx=(1-0.5)*2*1 = 1 pixel if w=1
+  auto world = AexWorld(src, 1, 1, 4);
+  std::vector<float> xy;
+  pix::PackMvec(world, xy, false, false, false, true, 1.f);
+  assert(xy.size() == 2);
+  assert(xy[0] > 0.99f && xy[0] < 1.01f);
+  assert(xy[1] > -0.01f && xy[1] < 0.01f);
+  pix::PackMvec(world, xy, false, false, false, true, 64.f);
+  assert(xy[0] > 63.f && xy[0] < 65.f);
+
+  std::vector<float> z;
+  pix::PackDepth(world, z, false, false);
+  assert(z.size() == 1 && z[0] > 0.99f);
+  pix::PackDepth(world, z, false, true);
+  assert(z[0] < 0.01f);
+
+  uint8_t dst[4] = {0, 0, 0, 0};
+  auto out = AexWorld(dst, 1, 1, 4);
+  float depthv[] = {0.25f};
+  pix::VizDepth(out, depthv, false);
+  assert(dst[1] > 50 && dst[1] < 80);  // R ~= 0.25*255 in AE ARGB
+}
+
 int main() {
   TestAexArgbTopDownRoundTrip();
   TestVerticalFlipIsExplicit();
   TestAex16BitRange();
+  TestAex16BitPassthroughIsExact();
   TestHighlightProtectionWithAexArgb();
+  TestPackMvecAndDepth();
   std::puts("pixio_selftest: PASS");
   return 0;
 }

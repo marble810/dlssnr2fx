@@ -188,9 +188,9 @@ nr_status NgxRuntime::Load(const std::wstring& runtimeDir, ID3D12Device* device)
 }
 
 nr_status NgxRuntime::CreateFeature(ID3D12GraphicsCommandList* list, uint32_t width,
-                                    uint32_t height, const nr_model& model) {
-  if (!list || !parameters_ || !create_) return NR_ERR_NGX;
-  ReleaseFeature();
+                                    uint32_t height, const nr_model& model, void** outFeature) {
+  if (!list || !parameters_ || !create_ || !outFeature) return NR_ERR_NGX;
+  *outFeature = nullptr;
   NrForwardModel forwarded{};
   forwarded.preset = model.preset;
   forwarded.intensity = model.intensity;
@@ -201,26 +201,39 @@ nr_status NgxRuntime::CreateFeature(ID3D12GraphicsCommandList* list, uint32_t wi
   forwarded.globalTone = model.global_tone;
   forwarded.autoMask = model.auto_mask;
   forwarded.uiCorrection = model.ui_correction;
-  feature_ = create_(snippetPath_.c_str(), dataPath_.c_str(), device_, list, parameters_, width,
-                     height, width, height, &forwarded);
-  return feature_ ? NR_OK : NR_ERR_NGX;
+  void* feature = create_(snippetPath_.c_str(), dataPath_.c_str(), device_, list, parameters_, width,
+                          height, width, height, &forwarded);
+  if (!feature) return NR_ERR_NGX;
+  features_.insert(feature);
+  *outFeature = feature;
+  return NR_OK;
 }
 
-nr_status NgxRuntime::Evaluate(ID3D12GraphicsCommandList* list, const GpuContext& gpu, bool reset) {
-  if (!list || !feature_ || !parameters_ || !evaluate_) return NR_ERR_NGX;
-  const int result = evaluate_(list, feature_, parameters_, gpu.Color(), gpu.Depth(), gpu.Motion(),
+nr_status NgxRuntime::Evaluate(ID3D12GraphicsCommandList* list, const GpuContext& gpu, void* feature,
+                               bool reset) {
+  if (!list || !feature || !parameters_ || !evaluate_) return NR_ERR_NGX;
+  if (!features_.count(feature)) return NR_ERR_NGX;
+  const int result = evaluate_(list, feature, parameters_, gpu.Color(), gpu.Depth(), gpu.Motion(),
                                gpu.Output(), gpu.Width(), gpu.Height(), gpu.Width(), gpu.Height(),
                                reset ? 1 : 0);
   return static_cast<NVSDK_NGX_Result>(result) == NVSDK_NGX_Result_Success ? NR_OK : NR_ERR_NGX;
 }
 
-void NgxRuntime::ReleaseFeature() {
-  if (feature_ && release_) release_(feature_);
-  feature_ = nullptr;
+void NgxRuntime::ReleaseFeature(void* feature) {
+  if (!feature) return;
+  if (release_ && features_.count(feature)) release_(feature);
+  features_.erase(feature);
+}
+
+void NgxRuntime::ReleaseAllFeatures() {
+  if (release_) {
+    for (void* feature : features_) release_(feature);
+  }
+  features_.clear();
 }
 
 void NgxRuntime::Shutdown(ID3D12Device* device) {
-  ReleaseFeature();
+  ReleaseAllFeatures();
   if (parameters_ && destroyParameters_) destroyParameters_(parameters_);
   parameters_ = nullptr;
   // The forwarder owns a separately initialized snippet instance but exposes no shutdown ABI.

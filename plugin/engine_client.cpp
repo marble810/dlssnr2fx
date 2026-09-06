@@ -4,7 +4,8 @@
 
 #include <windows.h>
 
-#include <mutex>
+#include "srw.h"
+
 #include <string>
 
 namespace engine_client {
@@ -13,7 +14,7 @@ using EvalFn = nr_status(NR_CALL*)(const nr_eval_desc*);
 using CancelFn = void(NR_CALL*)(uint32_t, uint32_t);
 using ShutdownFn = void(NR_CALL*)();
 
-std::mutex gMutex;
+SRWLOCK gMutex = SRWLOCK_INIT;
 HMODULE gModule = nullptr;
 EvalFn gEval = nullptr;
 CancelFn gCancel = nullptr;
@@ -62,7 +63,7 @@ bool LoadLocked() {
 nr_status Eval(const nr_eval_desc& desc) {
   EvalFn fn = nullptr;
   {
-    std::lock_guard<std::mutex> guard(gMutex);
+    SrwExclusive guard(gMutex);
     if (!LoadLocked()) return NR_ERR_MISSING_RUNTIME;
     fn = gEval;
   }
@@ -72,7 +73,7 @@ nr_status Eval(const nr_eval_desc& desc) {
 void Cancel(uint32_t instanceId, uint32_t requestId) {
   CancelFn fn = nullptr;
   {
-    std::lock_guard<std::mutex> guard(gMutex);
+    SrwExclusive guard(gMutex);
     if (!gModule) return;
     fn = gCancel;
   }
@@ -80,7 +81,7 @@ void Cancel(uint32_t instanceId, uint32_t requestId) {
 }
 
 void Shutdown() {
-  std::lock_guard<std::mutex> guard(gMutex);
+  SrwExclusive guard(gMutex);
   if (gShutdown) gShutdown();
   // Keep the engine module resident for the host process. The shipping NR forwarder has no
   // shutdown export and leaves snippet-owned code/data referenced after feature release;

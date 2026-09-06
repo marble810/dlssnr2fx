@@ -20,7 +20,6 @@
 
 #include <cstdarg>
 #include <cstdio>
-#include <string>
 
 namespace {
 
@@ -67,13 +66,14 @@ void Log(const char* format, ...) {
   OutputDebugStringA("dlssnr2fx-fwd: ");
   OutputDebugStringA(line);
   OutputDebugStringA("\n");
-  wchar_t temp[MAX_PATH]{};
-  if (!GetTempPathW(MAX_PATH, temp)) return;
+  wchar_t path[MAX_PATH + 16]{};
+  const DWORD n = GetTempPathW(MAX_PATH, path);
+  if (!n || n >= MAX_PATH) return;
+  if (wcscat_s(path, _countof(path), L"dlssnr2fx.log") != 0) return;
   FILE* file = nullptr;
-  const std::wstring path = std::wstring(temp) + L"dlssnr2fx.log";
-  if (_wfopen_s(&file, path.c_str(), L"ab") == 0 && file) {
-    std::fprintf(file, "dlssnr2fx-fwd: %s\r\n", line);
-    std::fclose(file);
+  if (_wfopen_s(&file, path, L"ab") == 0 && file) {
+    fprintf(file, "dlssnr2fx-fwd: %s\r\n", line);
+    fclose(file);
   }
 }
 
@@ -83,35 +83,94 @@ public:
   ~ScopedLock() { if (g_lockReady) LeaveCriticalSection(&g_lock); }
 };
 
-void** VTable(void* object) { return *reinterpret_cast<void***>(object); }
+// SEH wrappers: each function is POD-only so it is legal under /EHsc.  A bad vtable
+// slot or a snippet AV becomes a failed NGX result instead of taking down the host.
+
+bool SafeSetULL(void* block, int slot, const char* name, unsigned long long value) {
+  __try {
+    void** table = *reinterpret_cast<void***>(block);
+    reinterpret_cast<PfnSlotSetULL>(table[slot])(block, name, value);
+    return true;
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return false;
+  }
+}
+
+bool SafeGetResource(void* block, int slot, const char* name, ID3D12Resource** out,
+                     NVSDK_NGX_Result* result) {
+  __try {
+    void** table = *reinterpret_cast<void***>(block);
+    *result = reinterpret_cast<PfnSlotGetResource>(table[slot])(block, name, out);
+    return true;
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return false;
+  }
+}
+
+NVSDK_NGX_Result SafeInit(PfnSnippetInitExt fn, const wchar_t* dataPath, ID3D12Device* device) {
+  __try {
+    return fn(0ull, dataPath, device, NVSDK_NGX_Version_API, nullptr);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return NVSDK_NGX_Result_Fail;
+  }
+}
+
+NVSDK_NGX_Result SafeCreate(PfnSnippetCreate fn, ID3D12GraphicsCommandList* list, void* block,
+                            void** handle) {
+  __try {
+    return fn(list, kNgxFeatureNeuralRendering, block, handle);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    if (handle) *handle = nullptr;
+    return NVSDK_NGX_Result_Fail;
+  }
+}
+
+NVSDK_NGX_Result SafeEvaluate(PfnSnippetEvaluate fn, ID3D12GraphicsCommandList* list,
+                              void* feature, void* block) {
+  __try {
+    return fn(list, feature, block, nullptr);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return NVSDK_NGX_Result_Fail;
+  }
+}
+
+NVSDK_NGX_Result SafeRelease(PfnSnippetRelease fn, void* feature) {
+  __try {
+    return fn(feature);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return NVSDK_NGX_Result_Fail;
+  }
+}
 
 void SetUInt(void* block, const char* name, unsigned int value) {
   if (!block || g_uintSlot < 0 || g_uintSlot > 7) return;
-  reinterpret_cast<PfnSlotSetUInt>(VTable(block)[g_uintSlot])(block, name, value);
+  void** table = *reinterpret_cast<void***>(block);
+  reinterpret_cast<PfnSlotSetUInt>(table[g_uintSlot])(block, name, value);
 }
 
 void SetFloat(void* block, const char* name, float value) {
   if (!block || g_floatSlot < 0 || g_floatSlot > 7) return;
-  reinterpret_cast<PfnSlotSetFloat>(VTable(block)[g_floatSlot])(block, name, value);
+  void** table = *reinterpret_cast<void***>(block);
+  reinterpret_cast<PfnSlotSetFloat>(table[g_floatSlot])(block, name, value);
 }
 
 void SetResource(void* block, const char* name, ID3D12Resource* value) {
   if (!block || g_resourceSlot < 0 || g_resourceSlot > 7) return;
-  reinterpret_cast<PfnSlotSetULL>(VTable(block)[g_resourceSlot])(block, name,
-                                                                reinterpret_cast<unsigned long long>(value));
+  SafeSetULL(block, g_resourceSlot, name, reinterpret_cast<unsigned long long>(value));
 }
 
 ID3D12Resource* CreateProbeResource(ID3D12Device* device) {
   D3D12_HEAP_PROPERTIES heap{};
   heap.Type = D3D12_HEAP_TYPE_DEFAULT;
   D3D12_RESOURCE_DESC desc{};
-  desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-  desc.Width = 64;
+  desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+  desc.Width = 1;
   desc.Height = 1;
   desc.DepthOrArraySize = 1;
   desc.MipLevels = 1;
+  desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
   desc.SampleDesc.Count = 1;
-  desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+  desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
   ID3D12Resource* resource = nullptr;
   if (FAILED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
                                              D3D12_RESOURCE_STATE_COMMON, nullptr,
@@ -120,42 +179,43 @@ ID3D12Resource* CreateProbeResource(ID3D12Device* device) {
   return resource;
 }
 
-// Verify which raw slot round-trips an ID3D12Resource* through the block.  The setter
-// carriers are pointer-sized (ULL slot 0 is the observed one), but the block does not
-// follow the SDK header layout, so the readback Get slot is located by scanning the
-// pointer-valued Get positions (8..15) too.  If nothing round-trips, fall back to the
-// observed resource carrier slot 0 with a warning; the real Evaluate round trip is the
-// final arbiter.
+// Verify which pointer-width setter round-trips an ID3D12Resource* through the block.
+// Only pointer-sized Set slots (0/5/6/7) and pointer-sized Get slots (8/13/14/15) are
+// tried; a failed probe fails closed (no slot-0 fallback).  The probe key is cleared
+// before the resource is released so the capability block does not hold a dangling pointer.
 int DiscoverResourceSlot(void* block, ID3D12Device* device) {
   if (!block || !device) return -1;
   ID3D12Resource* probe = CreateProbeResource(device);
   if (!probe) return -1;
   const char* const probeName = "DLSSNR2FX.ResourceProbe";
+  static constexpr int kSetSlots[] = {0, 5, 6, 7};
+  static constexpr int kGetSlots[] = {8, 13, 14, 15};
   int found = -1;
-  for (int set = 0; set < 8 && found < 0; ++set) {
-    for (int get = 8; get < 16 && found < 0; ++get) {
+  for (int set : kSetSlots) {
+    if (found >= 0) break;
+    for (int get : kGetSlots) {
       ID3D12Resource* readback = nullptr;
-      reinterpret_cast<PfnSlotSetULL>(VTable(block)[set])(
-          block, probeName, reinterpret_cast<unsigned long long>(probe));
-      if (reinterpret_cast<PfnSlotGetResource>(VTable(block)[get])(block, probeName,
-                                                                  &readback) ==
-              NVSDK_NGX_Result_Success &&
-          readback == probe) {
+      NVSDK_NGX_Result getResult = NVSDK_NGX_Result_Fail;
+      if (!SafeSetULL(block, set, probeName, reinterpret_cast<unsigned long long>(probe)))
+        continue;
+      if (!SafeGetResource(block, get, probeName, &readback, &getResult)) continue;
+      if (getResult == NVSDK_NGX_Result_Success && readback == probe) {
         found = set;
         Log("resource slot=%d via Get slot %d", set, get);
+        break;
       }
     }
   }
-  if (found < 0) {
-    found = 0;
-    Log("resource slot verification failed; falling back to carrier slot 0");
-  }
+  for (int set : kSetSlots)
+    SafeSetULL(block, set, probeName, 0);
   probe->Release();
+  if (found < 0) Log("resource slot verification failed");
   return found;
 }
 
 bool LoadSnippet(const wchar_t* snippetPath) {
   if (g_snippet.module) return true;
+  const HMODULE preexisting = GetModuleHandleW(L"nvngx_dlssnr.dll");
   g_snippet.module = LoadLibraryExW(snippetPath, nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
   if (!g_snippet.module) {
     Log("snippet load failed: %ls", snippetPath);
@@ -174,14 +234,21 @@ bool LoadSnippet(const wchar_t* snippetPath) {
     g_snippet.module = nullptr;
     return false;
   }
-  Log("snippet loaded: %ls", snippetPath);
+  if (preexisting) {
+    // Previous forwarder incarnation already called Init_Ext; the snippet stays resident
+    // across FreeLibrary of this DLL.  Skip a second Init_Ext (NGX rejects / crashes on it).
+    g_snippet.initialized = true;
+    Log("snippet already resident; skipping Init_Ext: %ls", snippetPath);
+  } else {
+    Log("snippet loaded: %ls", snippetPath);
+  }
   return true;
 }
 
 void SetCreateParams(void* block, unsigned width, unsigned height, unsigned outWidth,
                      unsigned outHeight, const NrForwardModel* model) {
-  SetUInt(block, ngx_key::CreationNodeMask, 0);
-  SetUInt(block, ngx_key::VisibilityNodeMask, 0);
+  SetUInt(block, ngx_key::CreationNodeMask, 1);
+  SetUInt(block, ngx_key::VisibilityNodeMask, 1);
   SetUInt(block, ngx_key::Width, width);
   SetUInt(block, ngx_key::Height, height);
   SetUInt(block, ngx_key::OutWidth, outWidth);
@@ -244,8 +311,7 @@ __declspec(dllexport) void* fwd_create(const wchar_t* snippetPath, const wchar_t
   }
 
   if (!g_snippet.initialized) {
-    const NVSDK_NGX_Result initResult =
-        g_snippet.init(0ull, dataPath, device, NVSDK_NGX_Version_API, nullptr);
+    const NVSDK_NGX_Result initResult = SafeInit(g_snippet.init, dataPath, device);
     if (NgxFailed(initResult)) {
       Log("snippet Init_Ext failed: 0x%08X", static_cast<unsigned>(initResult));
       return nullptr;
@@ -253,16 +319,17 @@ __declspec(dllexport) void* fwd_create(const wchar_t* snippetPath, const wchar_t
     g_snippet.initialized = true;
     g_snippet.device = device;
     Log("snippet initialized");
-  } else if (g_snippet.device != device) {
+  } else if (g_snippet.device && g_snippet.device != device) {
     Log("create: snippet already initialised for another adapter (multi-GPU unsupported)");
     return nullptr;
+  } else {
+    g_snippet.device = device;
   }
 
   SetCreateParams(block, width, height, outWidth, outHeight, model);
 
   void* handle = nullptr;
-  const NVSDK_NGX_Result createResult =
-      g_snippet.create(list, kNgxFeatureNeuralRendering, block, &handle);
+  const NVSDK_NGX_Result createResult = SafeCreate(g_snippet.create, list, block, &handle);
   if (NgxFailed(createResult) || !handle) {
     Log("snippet CreateFeature failed: 0x%08X", static_cast<unsigned>(createResult));
     return nullptr;
@@ -279,6 +346,7 @@ __declspec(dllexport) int fwd_evaluate(ID3D12GraphicsCommandList* list, void* fe
                                        int reset) {
   ScopedLock lock;
   if (!list || !feature || !block || !color || !depth || !motion || !output) return 0;
+  if (!g_snippet.evaluate || g_uintSlot < 0 || g_resourceSlot < 0) return 0;
   SetResource(block, ngx_key::Color, color);
   SetResource(block, ngx_key::Depth, depth);
   SetResource(block, ngx_key::MVec, motion);
@@ -301,11 +369,11 @@ __declspec(dllexport) int fwd_evaluate(ID3D12GraphicsCommandList* list, void* fe
   SetUInt(block, ngx_key::MVecSubrectHeight, height);
   SetUInt(block, ngx_key::OutputSubrectWidth, outWidth);
   SetUInt(block, ngx_key::OutputSubrectHeight, outHeight);
-  SetUInt(block, ngx_key::DepthInverted, 0);
+  SetUInt(block, ngx_key::DepthInverted, 1);
   SetFloat(block, ngx_key::MVecScaleX, 1.0f);
   SetFloat(block, ngx_key::MVecScaleY, 1.0f);
   SetUInt(block, ngx_key::Reset, reset ? 1u : 0u);
-  const NVSDK_NGX_Result result = g_snippet.evaluate(list, feature, block, nullptr);
+  const NVSDK_NGX_Result result = SafeEvaluate(g_snippet.evaluate, list, feature, block);
   if (NgxFailed(result)) {
     Log("snippet EvaluateFeature failed: 0x%08X reset=%d", static_cast<unsigned>(result), reset);
   }
@@ -315,7 +383,7 @@ __declspec(dllexport) int fwd_evaluate(ID3D12GraphicsCommandList* list, void* fe
 __declspec(dllexport) void fwd_release(void* feature) {
   ScopedLock lock;
   if (feature && g_snippet.release) {
-    const NVSDK_NGX_Result result = g_snippet.release(feature);
+    const NVSDK_NGX_Result result = SafeRelease(g_snippet.release, feature);
     if (NgxFailed(result))
       Log("snippet ReleaseFeature failed: 0x%08X", static_cast<unsigned>(result));
   }
@@ -323,19 +391,14 @@ __declspec(dllexport) void fwd_release(void* feature) {
 
 }  // extern "C"
 
-BOOL WINAPI DllMain(HINSTANCE, DWORD reason, LPVOID) {
+BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID) {
   if (reason == DLL_PROCESS_ATTACH) {
+    DisableThreadLibraryCalls(instance);
     InitializeCriticalSection(&g_lock);
     g_lockReady = true;
-  } else if (reason == DLL_PROCESS_DETACH) {
-    g_lockReady = false;
-    DeleteCriticalSection(&g_lock);
-    if (g_snippet.module) {
-      // No snippet shutdown export is part of the forwarder ABI.  Per architectural
-      // decision the driver snippet stays loaded until process exit, so we do not
-      // FreeLibrary here; Windows reclaims the module at process teardown.
-      g_snippet.module = nullptr;
-    }
   }
+  // PROCESS_DETACH is a no-op: the snippet has no shutdown export and stays resident
+  // until process exit, and the critical section is reclaimed with the image.  Clearing
+  // globals here raced with a subsequent LoadLibrary of this same DLL.
   return TRUE;
 }

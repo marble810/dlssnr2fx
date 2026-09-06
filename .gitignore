@@ -25,6 +25,9 @@ HANDOFF.md
 nul
 legacy/
 
+# third-party repo clones and research notes
+temp/
+
 # test artifacts and downloaded SDKs
 nr_out/
 test/*.bmp

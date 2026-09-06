@@ -3,15 +3,18 @@ setlocal EnableExtensions EnableDelayedExpansion
 cd /d "%~dp0"
 
 :: Fetch nvngx_dlssnr.dll for the local GPU family from RankFTW/rhi-repo.
+:: Also fetches Depth Anything V2 Small ONNX + ONNX Runtime CPU (DAV2 estimate path).
 ::
 ::   fetch-runtime.bat              interactive, nvidia-smi suggests a default
 ::   fetch-runtime.bat 50           RTX 50 / Blackwell  (dlssnr-310.8.0)
 ::   fetch-runtime.bat 40           RTX 40 / Ada        (dlssnr-310.8.0-RTX40)
 ::   fetch-runtime.bat 30           RTX 20/30 FP16      (dlssnr-310.8.SF-v2, unsupported)
+::   fetch-runtime.bat dav2         only DAV2 model + onnxruntime.dll
 ::   fetch-runtime.bat 40 --force   re-download even if the zip is cached
 
 set "FAMILY="
 set "FORCE=0"
+set "DAV2_ONLY=0"
 
 :parse_args
 if "%~1"=="" goto args_done
@@ -31,6 +34,7 @@ if /i "%~1"=="20" set "FAMILY=30" & shift & goto parse_args
 if /i "%~1"=="rtx30" set "FAMILY=30" & shift & goto parse_args
 if /i "%~1"=="rtx20" set "FAMILY=30" & shift & goto parse_args
 if /i "%~1"=="sf" set "FAMILY=30" & shift & goto parse_args
+if /i "%~1"=="dav2" set "DAV2_ONLY=1" & shift & goto parse_args
 echo ERROR: unknown argument "%~1"
 echo.
 goto usage
@@ -39,6 +43,7 @@ goto usage
 mkdir runtime 2>nul
 mkdir nr_out 2>nul
 
+if "!DAV2_ONLY!"=="1" goto dav2_only
 if defined FAMILY goto family_ready
 
 set "GPU_NAME="
@@ -162,21 +167,94 @@ echo !NR_LABEL!>> runtime\nr-family.txt
 echo.
 echo runtime ready  [!NR_LABEL!]
 dir /b runtime\nvngx_dlssnr.dll
+call :fetch_dav2
+if errorlevel 1 echo WARNING: DAV2 fetch failed; Depth Estimate will stay Off until runtime\dav2_vits.onnx and onnxruntime.dll are present
 exit /b 0
 
 :cancelled
 echo cancelled.
 exit /b 2
 
+:dav2_only
+call :fetch_dav2
+exit /b %ERRORLEVEL%
+
+:fetch_dav2
+set "DAV2_ONNX=runtime\dav2_vits.onnx"
+set "DAV2_URL=https://huggingface.co/onnx-community/depth-anything-v2-small/resolve/main/onnx/model_fp16.onnx"
+set "ORT_VER=1.29.0"
+set "ORT_ZIP=runtime\onnxruntime-win-x64-!ORT_VER!.zip"
+set "ORT_URL=https://github.com/microsoft/onnxruntime/releases/download/v!ORT_VER!/onnxruntime-win-x64-!ORT_VER!.zip"
+
+echo.
+echo DAV2  : onnx-community/depth-anything-v2-small  model_fp16.onnx
+echo         -^> !DAV2_ONNX!
+echo ORT   : onnxruntime-win-x64-!ORT_VER!  -^> runtime\onnxruntime.dll
+echo.
+
+if "!FORCE!"=="1" (
+  if exist "!DAV2_ONNX!" del /q "!DAV2_ONNX!" >nul 2>nul
+  if exist "!ORT_ZIP!" del /q "!ORT_ZIP!" >nul 2>nul
+)
+
+if not exist "!DAV2_ONNX!" (
+  echo Downloading DAV2 ViT-S FP16 ONNX ...
+  curl.exe -L --retry 3 -o "!DAV2_ONNX!" "!DAV2_URL!"
+  if errorlevel 1 (
+    echo ERROR: DAV2 ONNX download failed
+    echo Manual: !DAV2_URL!
+    exit /b 1
+  )
+) else echo using existing !DAV2_ONNX!
+
+for %%I in ("!DAV2_ONNX!") do set "DAV2_SIZE=%%~zI"
+if "!DAV2_SIZE!"=="" set "DAV2_SIZE=0"
+if !DAV2_SIZE! LSS 1000000 (
+  echo ERROR: !DAV2_ONNX! is too small ^(!DAV2_SIZE! bytes^), likely an HTML error page
+  del /q "!DAV2_ONNX!" >nul 2>nul
+  exit /b 1
+)
+
+if not exist "!ORT_ZIP!" (
+  echo Downloading ONNX Runtime !ORT_VER! ...
+  curl.exe -L --retry 3 -o "!ORT_ZIP!" "!ORT_URL!"
+  if errorlevel 1 (
+    echo ERROR: onnxruntime zip download failed
+    echo Manual: !ORT_URL!
+    exit /b 1
+  )
+) else echo using existing !ORT_ZIP!
+
+if exist runtime\onnxruntime.dll if "!FORCE!"=="0" (
+  echo using existing runtime\onnxruntime.dll
+  dir /b runtime\dav2_vits.onnx runtime\onnxruntime.dll
+  exit /b 0
+)
+
+set "DLSSNR_ORT_ZIP=!ORT_ZIP!"
+python -c "import os,zipfile,shutil,pathlib,sys; root=pathlib.Path('runtime'); z=pathlib.Path(os.environ['DLSSNR_ORT_ZIP']); tmp=root/'_ort'; shutil.rmtree(tmp, ignore_errors=True); tmp.mkdir(parents=True); zipfile.ZipFile(z).extractall(tmp); names=('onnxruntime.dll','onnxruntime_providers_shared.dll'); files=[p for p in tmp.rglob('*') if p.name in names]; [shutil.copy2(p, root/p.name) for p in files]; shutil.rmtree(tmp, ignore_errors=True); print('copied', ', '.join(sorted({p.name for p in files}))); sys.exit(0 if any(p.name=='onnxruntime.dll' for p in files) else 1)"
+if errorlevel 1 (
+  echo ERROR: onnxruntime extract failed
+  exit /b 1
+)
+if not exist runtime\onnxruntime.dll (
+  echo ERROR: runtime\onnxruntime.dll missing after extract
+  exit /b 1
+)
+dir /b runtime\dav2_vits.onnx runtime\onnxruntime.dll
+exit /b 0
+
 :usage
-echo Usage: fetch-runtime.bat [50^|40^|30] [--force]
+echo Usage: fetch-runtime.bat [50^|40^|30^|dav2] [--force]
 echo.
 echo   no args   detect GPU via nvidia-smi, then interactive menu
 echo   50        RTX 50  nvngx_dlssnr from dlssnr-310.8.0
 echo   40        RTX 40  nvngx_dlssnr from dlssnr-310.8.0-RTX40
 echo   30        RTX 20/30 FP16 from dlssnr-310.8.SF-v2 ^(unsupported^)
-echo   --force   re-download the NR zip even if cached
+echo   dav2      Depth Anything V2 Small FP16 ONNX + onnxruntime.dll
+echo   --force   re-download cached zips/ONNX
 echo.
-echo Zips are cached per family (runtime\nr-rtx40.zip etc.) so switching
-echo GPU SKUs does not reuse the wrong nvngx_dlssnr.dll.
+echo NR zips are cached per family (runtime\nr-rtx40.zip etc.).
+echo DAV2: huggingface.co/onnx-community/depth-anything-v2-small  model_fp16.onnx
+echo ORT : github.com/microsoft/onnxruntime  onnxruntime-win-x64-1.29.0
 exit /b 0

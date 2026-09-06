@@ -3,6 +3,7 @@
 #include <DirectXPackedVector.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <limits>
 
@@ -59,6 +60,8 @@ bool GpuContext::Initialize(int adapterIndex) {
   if (!chosen || FAILED(D3D12CreateDevice(chosen.Get(), D3D_FEATURE_LEVEL_11_0,
                                            IID_PPV_ARGS(&device_))))
     return false;
+  DXGI_ADAPTER_DESC1 adapterDesc{};
+  if (SUCCEEDED(chosen->GetDesc1(&adapterDesc))) adapterLuid_ = adapterDesc.AdapterLuid;
 
   D3D12_COMMAND_QUEUE_DESC q{};
   q.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
@@ -214,20 +217,24 @@ bool GpuContext::UploadTexture(GpuTexture& texture, const void* rows, size_t row
   return EndAndWait(timeoutMs);
 }
 
-bool GpuContext::UploadInputs(const uint8_t* rgba, size_t rgbaBytes, uint32_t timeoutMs) {
+bool GpuContext::UploadHalfColorAndDummies(const std::vector<uint16_t>& color, const uint16_t* motionRG,
+                                           const float* depthR, uint32_t timeoutMs) {
   const size_t pixels = static_cast<size_t>(color_.width) * color_.height;
-  if (!rgba || rgbaBytes != pixels * 4) return false;
+  if (color.size() != pixels * 4) return false;
   const ULONGLONG deadline = GetTickCount64() + timeoutMs;
   auto remaining = [&]() -> uint32_t {
     ULONGLONG now = GetTickCount64();
     if (now >= deadline) return 0;
     return static_cast<uint32_t>(deadline - now);
   };
-  std::vector<uint16_t> color(pixels * 4);
-  for (size_t i = 0; i < pixels * 4; ++i)
-    color[i] = XMConvertFloatToHalf(rgba[i] / 255.0f);
-  std::vector<float> depth(pixels, 0.5f);
-  std::vector<uint16_t> motion(pixels * 2, XMConvertFloatToHalf(0.0f));
+  std::vector<float> depth(pixels, 0.0f);
+  if (depthR) std::memcpy(depth.data(), depthR, pixels * sizeof(float));
+  std::vector<uint16_t> zeroMotion;
+  const uint16_t* motion = motionRG;
+  if (!motion) {
+    zeroMotion.assign(pixels * 2, XMConvertFloatToHalf(0.0f));
+    motion = zeroMotion.data();
+  }
   uint32_t wait = remaining();
   if (!wait || !UploadTexture(color_, color.data(), static_cast<size_t>(color_.width) * 8,
                               D3D12_RESOURCE_STATE_UNORDERED_ACCESS, wait)) return false;
@@ -235,12 +242,85 @@ bool GpuContext::UploadInputs(const uint8_t* rgba, size_t rgbaBytes, uint32_t ti
   if (!wait || !UploadTexture(depth_, depth.data(), static_cast<size_t>(depth_.width) * 4,
                               D3D12_RESOURCE_STATE_UNORDERED_ACCESS, wait)) return false;
   wait = remaining();
-  if (!wait || !UploadTexture(motion_, motion.data(), static_cast<size_t>(motion_.width) * 4,
+  if (!wait || !UploadTexture(motion_, motion, static_cast<size_t>(motion_.width) * 4,
                               D3D12_RESOURCE_STATE_UNORDERED_ACCESS, wait)) return false;
   wait = remaining();
   if (!wait || !Begin()) return false;
   Transition(output_, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
   return EndAndWait(wait);
+}
+
+bool GpuContext::UploadInputs(const uint8_t* rgba, size_t rgbaBytes, uint32_t timeoutMs) {
+  return UploadInputs(rgba, rgbaBytes, nullptr, 0, nullptr, 0, timeoutMs);
+}
+
+bool GpuContext::UploadInputs(const float* rgba, size_t rgbaBytes, uint32_t timeoutMs) {
+  return UploadInputs(rgba, rgbaBytes, nullptr, 0, nullptr, 0, timeoutMs);
+}
+
+static void ColorFromRgba8(const uint8_t* rgba, size_t pixels, std::vector<uint16_t>& color) {
+  color.resize(pixels * 4);
+  for (size_t i = 0; i < pixels * 4; ++i)
+    color[i] = XMConvertFloatToHalf(rgba[i] / 255.0f);
+}
+
+static void ColorFromRgba32f(const float* rgba, size_t pixels, std::vector<uint16_t>& color) {
+  color.resize(pixels * 4);
+  for (size_t i = 0; i < pixels * 4; ++i) {
+    float v = rgba[i];
+    if (!std::isfinite(v)) v = 0.0f;
+    v = std::max(-65504.0f, std::min(65504.0f, v));
+    color[i] = XMConvertFloatToHalf(v);
+  }
+}
+
+static bool PackMotion(const float* mvecXY, size_t mvecBytes, size_t pixels,
+                       std::vector<uint16_t>& motion) {
+  if (!mvecXY || mvecBytes != pixels * 2 * sizeof(float)) return false;
+  motion.resize(pixels * 2);
+  for (size_t i = 0; i < pixels * 2; ++i) {
+    float v = mvecXY[i];
+    if (!std::isfinite(v)) v = 0.0f;
+    v = std::max(-65504.0f, std::min(65504.0f, v));
+    motion[i] = XMConvertFloatToHalf(v);
+  }
+  return true;
+}
+
+bool GpuContext::UploadInputs(const uint8_t* rgba, size_t rgbaBytes, const float* mvecXY,
+                              size_t mvecBytes, uint32_t timeoutMs) {
+  return UploadInputs(rgba, rgbaBytes, mvecXY, mvecBytes, nullptr, 0, timeoutMs);
+}
+
+bool GpuContext::UploadInputs(const float* rgba, size_t rgbaBytes, const float* mvecXY,
+                              size_t mvecBytes, uint32_t timeoutMs) {
+  return UploadInputs(rgba, rgbaBytes, mvecXY, mvecBytes, nullptr, 0, timeoutMs);
+}
+
+bool GpuContext::UploadInputs(const uint8_t* rgba, size_t rgbaBytes, const float* mvecXY,
+                              size_t mvecBytes, const float* depthR, size_t depthBytes,
+                              uint32_t timeoutMs) {
+  const size_t pixels = static_cast<size_t>(color_.width) * color_.height;
+  if (!rgba || rgbaBytes != pixels * 4) return false;
+  std::vector<uint16_t> color, motion;
+  ColorFromRgba8(rgba, pixels, color);
+  const uint16_t* motionPtr = nullptr;
+  if (PackMotion(mvecXY, mvecBytes, pixels, motion)) motionPtr = motion.data();
+  const float* depthPtr = (depthR && depthBytes == pixels * sizeof(float)) ? depthR : nullptr;
+  return UploadHalfColorAndDummies(color, motionPtr, depthPtr, timeoutMs);
+}
+
+bool GpuContext::UploadInputs(const float* rgba, size_t rgbaBytes, const float* mvecXY,
+                              size_t mvecBytes, const float* depthR, size_t depthBytes,
+                              uint32_t timeoutMs) {
+  const size_t pixels = static_cast<size_t>(color_.width) * color_.height;
+  if (!rgba || rgbaBytes != pixels * 4 * sizeof(float)) return false;
+  std::vector<uint16_t> color, motion;
+  ColorFromRgba32f(rgba, pixels, color);
+  const uint16_t* motionPtr = nullptr;
+  if (PackMotion(mvecXY, mvecBytes, pixels, motion)) motionPtr = motion.data();
+  const float* depthPtr = (depthR && depthBytes == pixels * sizeof(float)) ? depthR : nullptr;
+  return UploadHalfColorAndDummies(color, motionPtr, depthPtr, timeoutMs);
 }
 
 bool GpuContext::CopyColorToOutput(uint32_t timeoutMs) {
@@ -253,7 +333,7 @@ bool GpuContext::CopyColorToOutput(uint32_t timeoutMs) {
   return EndAndWait(timeoutMs);
 }
 
-bool GpuContext::ReadOutput(std::vector<uint8_t>& rgba, uint32_t timeoutMs) {
+bool GpuContext::ReadbackHalf(std::vector<uint16_t>& halfRgba, uint32_t timeoutMs) {
   D3D12_RESOURCE_DESC td = output_.resource->GetDesc();
   D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp{};
   UINT numRows = 0;
@@ -283,17 +363,34 @@ bool GpuContext::ReadOutput(std::vector<uint8_t>& rgba, uint32_t timeoutMs) {
   if (FAILED(readback->Map(0, nullptr, reinterpret_cast<void**>(const_cast<uint8_t**>(&mapped)))))
     return false;
   const size_t pixels = static_cast<size_t>(output_.width) * output_.height;
-  rgba.resize(pixels * 4);
+  halfRgba.resize(pixels * 4);
   for (uint32_t y = 0; y < output_.height; ++y) {
     const uint16_t* row = reinterpret_cast<const uint16_t*>(mapped + fp.Offset +
         static_cast<size_t>(y) * fp.Footprint.RowPitch);
-    for (uint32_t x = 0; x < output_.width * 4; ++x) {
-      float v = XMConvertHalfToFloat(row[x]);
-      v = std::max(0.0f, std::min(1.0f, v));
-      rgba[(static_cast<size_t>(y) * output_.width * 4) + x] =
-          static_cast<uint8_t>(v * 255.0f + 0.5f);
-    }
+    memcpy(halfRgba.data() + static_cast<size_t>(y) * output_.width * 4, row,
+           static_cast<size_t>(output_.width) * 4 * sizeof(uint16_t));
   }
   readback->Unmap(0, nullptr);
+  return true;
+}
+
+bool GpuContext::ReadOutput(std::vector<uint8_t>& rgba, uint32_t timeoutMs) {
+  std::vector<uint16_t> halfRgba;
+  if (!ReadbackHalf(halfRgba, timeoutMs)) return false;
+  rgba.resize(halfRgba.size());
+  for (size_t i = 0; i < halfRgba.size(); ++i) {
+    float v = XMConvertHalfToFloat(halfRgba[i]);
+    v = std::max(0.0f, std::min(1.0f, v));
+    rgba[i] = static_cast<uint8_t>(v * 255.0f + 0.5f);
+  }
+  return true;
+}
+
+bool GpuContext::ReadOutput(std::vector<float>& rgba, uint32_t timeoutMs) {
+  std::vector<uint16_t> halfRgba;
+  if (!ReadbackHalf(halfRgba, timeoutMs)) return false;
+  rgba.resize(halfRgba.size());
+  for (size_t i = 0; i < halfRgba.size(); ++i)
+    rgba[i] = XMConvertHalfToFloat(halfRgba[i]);
   return true;
 }

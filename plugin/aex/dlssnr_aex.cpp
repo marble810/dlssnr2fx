@@ -23,27 +23,57 @@
 
 enum {
   AEX_INPUT = 0,
+  AEX_VIEW,
+  AEX_GRP_LOOK,
   AEX_INTENSITY,
   AEX_STYLE,
   AEX_DETAIL,
   AEX_COLOR,
   AEX_UI_CORRECTION,
+  AEX_GRP_LOOK_END,
+  AEX_GRP_STRUCTURE,
   AEX_LOCAL_STRUCTURE,
   AEX_LOCAL_TONE,
   AEX_SKIN,
   AEX_GLOBAL_TONE,
+  AEX_GRP_STRUCTURE_END,
   AEX_MOTION,
   AEX_MOTION_ENGINE,
   AEX_MOTION_VIS,
-  AEX_PRESET,
-  AEX_HDR,
-  AEX_AUTO_MASK,
-  AEX_ADAPTER,
+  AEX_GRP_HIGHLIGHT,
   AEX_HL_PROTECT,
   AEX_HL_THRESHOLD,
   AEX_HL_SOFTNESS,
   AEX_HL_MIX,
   AEX_HL_SHOW_MASK,
+  AEX_GRP_HIGHLIGHT_END,
+  AEX_GRP_MVEC,
+  AEX_MVEC_SOURCE,
+  AEX_MVEC_LAYER,
+  AEX_MVEC_DIR,
+  AEX_MVEC_UNIT,
+  AEX_MVEC_ENC,
+  AEX_MVEC_RANGE,
+  AEX_NVOF_QUALITY,
+  AEX_NVOF_HINT,
+  AEX_GRP_MVEC_END,
+  AEX_GRP_DEPTH,
+  AEX_DEPTH_SOURCE,
+  AEX_DEPTH_LAYER,
+  AEX_DEPTH_CONV,
+  AEX_DAV2_INTERVAL,
+  AEX_DAV2_EMA,
+  AEX_GRP_DEPTH_END,
+  AEX_GRP_FG,
+  AEX_FG_MODE,
+  AEX_FG_COALESCE,
+  AEX_GRP_FG_END,
+  AEX_GRP_ADVANCED,
+  AEX_PRESET,
+  AEX_HDR,
+  AEX_AUTO_MASK,
+  AEX_ADAPTER,
+  AEX_GRP_ADVANCED_END,
   AEX_NUM_PARAMS
 };
 
@@ -109,7 +139,12 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data) {
   PF_Err err = PF_Err_NONE;
   PF_ParamDef def;
 
-  // Look group (order matches the OFX host version)
+  AEFX_CLR_STRUCT(def);
+  PF_ADD_POPUP("View", 5, 1, "Final Image|Source Image|Depth Map|Motion Vector Map|Highlight Mask",
+               AEX_VIEW);
+
+  AEFX_CLR_STRUCT(def);
+  PF_ADD_TOPIC("Look", AEX_GRP_LOOK);
   AEFX_CLR_STRUCT(def);
   PF_ADD_FLOAT_SLIDERX("Intensity", 0, 2, 0, 2, 1.0, 2, PF_ValueDisplayFlag_NONE, 0, AEX_INTENSITY);
   AEFX_CLR_STRUCT(def);
@@ -120,8 +155,11 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data) {
   PF_ADD_FLOAT_SLIDERX("Color", 0, 1, 0, 1, 1.0, 2, PF_ValueDisplayFlag_NONE, 0, AEX_COLOR);
   AEFX_CLR_STRUCT(def);
   PF_ADD_CHECKBOXX("UI Correction", FALSE, 0, AEX_UI_CORRECTION);
+  AEFX_CLR_STRUCT(def);
+  PF_END_TOPIC(AEX_GRP_LOOK_END);
 
-  // Structure group
+  AEFX_CLR_STRUCT(def);
+  PF_ADD_TOPIC("Structure", AEX_GRP_STRUCTURE);
   AEFX_CLR_STRUCT(def);
   PF_ADD_FLOAT_SLIDERX("Local Structure", 0, 2, 0, 2, 1.0, 2, PF_ValueDisplayFlag_NONE, 0, AEX_LOCAL_STRUCTURE);
   AEFX_CLR_STRUCT(def);
@@ -130,16 +168,86 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data) {
   PF_ADD_FLOAT_SLIDERX("Skin", -1, 2, -1, 2, -1.0, 2, PF_ValueDisplayFlag_NONE, 0, AEX_SKIN);
   AEFX_CLR_STRUCT(def);
   PF_ADD_FLOAT_SLIDERX("Global Tone", -1, 2, -1, 2, -1.0, 2, PF_ValueDisplayFlag_NONE, 0, AEX_GLOBAL_TONE);
+  AEFX_CLR_STRUCT(def);
+  PF_END_TOPIC(AEX_GRP_STRUCTURE_END);
 
-  // Motion group
   AEFX_CLR_STRUCT(def);
-  PF_ADD_CHECKBOXX("Motion Vectors", FALSE, 0, AEX_MOTION);
+  def.ui_flags = PF_PUI_INVISIBLE;
+  PF_ADD_CHECKBOX("Motion Vectors", "", FALSE, 0, AEX_MOTION);
   AEFX_CLR_STRUCT(def);
+  def.ui_flags = PF_PUI_INVISIBLE;
   PF_ADD_POPUP("Motion Engine", 3, 1, "Auto|NVOF|Lucas-Kanade", AEX_MOTION_ENGINE);
   AEFX_CLR_STRUCT(def);
-  PF_ADD_CHECKBOXX("Motion Visualize", FALSE, 0, AEX_MOTION_VIS);
+  def.ui_flags = PF_PUI_INVISIBLE;
+  PF_ADD_CHECKBOX("Motion Visualize", "", FALSE, 0, AEX_MOTION_VIS);
 
-  // Advanced group
+  AEFX_CLR_STRUCT(def);
+  PF_ADD_TOPIC("Highlight Protect", AEX_GRP_HIGHLIGHT);
+  AEFX_CLR_STRUCT(def);
+  PF_ADD_CHECKBOXX("Enable", TRUE, 0, AEX_HL_PROTECT);
+  AEFX_CLR_STRUCT(def);
+  PF_ADD_FLOAT_SLIDERX("Threshold", 0, 1, 0, 1, 0.80, 2, PF_ValueDisplayFlag_NONE, 0,
+                       AEX_HL_THRESHOLD);
+  AEFX_CLR_STRUCT(def);
+  PF_ADD_FLOAT_SLIDERX("Softness", 0, 1, 0, 1, 0.15, 2, PF_ValueDisplayFlag_NONE, 0,
+                       AEX_HL_SOFTNESS);
+  AEFX_CLR_STRUCT(def);
+  PF_ADD_FLOAT_SLIDERX("Mix", 0, 1, 0, 1, 1.0, 2, PF_ValueDisplayFlag_NONE, 0, AEX_HL_MIX);
+  AEFX_CLR_STRUCT(def);
+  def.ui_flags = PF_PUI_INVISIBLE;
+  PF_ADD_CHECKBOXX("Show Mask", FALSE, 0, AEX_HL_SHOW_MASK);
+  AEFX_CLR_STRUCT(def);
+  PF_END_TOPIC(AEX_GRP_HIGHLIGHT_END);
+
+  AEFX_CLR_STRUCT(def);
+  PF_ADD_TOPIC("Motion Vectors", AEX_GRP_MVEC);
+  AEFX_CLR_STRUCT(def);
+  PF_ADD_POPUP("Source", 3, 3, "Off|Input|Estimate (NVOF)", AEX_MVEC_SOURCE);
+  AEFX_CLR_STRUCT(def);
+  PF_ADD_LAYER("Input", 0, AEX_MVEC_LAYER);
+  AEFX_CLR_STRUCT(def);
+  PF_ADD_POPUP("Direction", 2, 1, "Current to Previous|Previous to Current", AEX_MVEC_DIR);
+  AEFX_CLR_STRUCT(def);
+  PF_ADD_POPUP("Units", 2, 1, "Pixels|UV", AEX_MVEC_UNIT);
+  AEFX_CLR_STRUCT(def);
+  PF_ADD_POPUP("Encoding", 2, 1, "Centered 0.5 (AE)|Signed 0=still", AEX_MVEC_ENC);
+  AEFX_CLR_STRUCT(def);
+  PF_ADD_FLOAT_SLIDERX("Range (px)", 1, 1024, 1, 1024, 64.0, 1, PF_ValueDisplayFlag_NONE, 0,
+                       AEX_MVEC_RANGE);
+  AEFX_CLR_STRUCT(def);
+  PF_ADD_POPUP("NVOF Quality", 3, 2, "Slow|Medium|Fast", AEX_NVOF_QUALITY);
+  AEFX_CLR_STRUCT(def);
+  PF_ADD_CHECKBOXX("NVOF Temporal Hint", TRUE, 0, AEX_NVOF_HINT);
+  AEFX_CLR_STRUCT(def);
+  PF_END_TOPIC(AEX_GRP_MVEC_END);
+
+  AEFX_CLR_STRUCT(def);
+  PF_ADD_TOPIC("Depth", AEX_GRP_DEPTH);
+  AEFX_CLR_STRUCT(def);
+  PF_ADD_POPUP("Source", 3, 3, "Off|Input|Estimate (DAV2)", AEX_DEPTH_SOURCE);
+  AEFX_CLR_STRUCT(def);
+  PF_ADD_LAYER("Input", 0, AEX_DEPTH_LAYER);
+  AEFX_CLR_STRUCT(def);
+  PF_ADD_POPUP("Convention", 2, 1, "Inverse (near=1)|Linear (near=0)", AEX_DEPTH_CONV);
+  AEFX_CLR_STRUCT(def);
+  PF_ADD_SLIDER("DAV2 Interval", 1, 8, 1, 8, 4, AEX_DAV2_INTERVAL);
+  AEFX_CLR_STRUCT(def);
+  PF_ADD_FLOAT_SLIDERX("DAV2 Temporal Blend", 0, 0.95, 0, 0.95, 0.70, 2, PF_ValueDisplayFlag_NONE, 0,
+                       AEX_DAV2_EMA);
+  AEFX_CLR_STRUCT(def);
+  PF_END_TOPIC(AEX_GRP_DEPTH_END);
+
+  AEFX_CLR_STRUCT(def);
+  PF_ADD_TOPIC("Frame Guidance", AEX_GRP_FG);
+  AEFX_CLR_STRUCT(def);
+  PF_ADD_POPUP("Mode", 2, 2, "Always Reset|Lock History", AEX_FG_MODE);
+  AEFX_CLR_STRUCT(def);
+  PF_ADD_CHECKBOXX("Coalesce Same Frame", TRUE, 0, AEX_FG_COALESCE);
+  AEFX_CLR_STRUCT(def);
+  PF_END_TOPIC(AEX_GRP_FG_END);
+
+  AEFX_CLR_STRUCT(def);
+  PF_ADD_TOPIC("Advanced", AEX_GRP_ADVANCED);
   AEFX_CLR_STRUCT(def);
   PF_ADD_SLIDER("NR Preset", 0, 8, 0, 8, 0, AEX_PRESET);
   AEFX_CLR_STRUCT(def);
@@ -148,21 +256,8 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data) {
   PF_ADD_CHECKBOXX("Auto Mask", FALSE, 0, AEX_AUTO_MASK);
   AEFX_CLR_STRUCT(def);
   PF_ADD_SLIDER("GPU Adapter", -1, 8, -1, 8, -1, AEX_ADAPTER);
-
-  // Highlight protection (same post-process and defaults as the OFX plug-in)
   AEFX_CLR_STRUCT(def);
-  PF_ADD_CHECKBOXX("Highlight Protect", TRUE, 0, AEX_HL_PROTECT);
-  AEFX_CLR_STRUCT(def);
-  PF_ADD_FLOAT_SLIDERX("Highlight Threshold", 0, 1, 0, 1, 0.80, 2, PF_ValueDisplayFlag_NONE, 0,
-                       AEX_HL_THRESHOLD);
-  AEFX_CLR_STRUCT(def);
-  PF_ADD_FLOAT_SLIDERX("Highlight Softness", 0, 1, 0, 1, 0.15, 2, PF_ValueDisplayFlag_NONE, 0,
-                       AEX_HL_SOFTNESS);
-  AEFX_CLR_STRUCT(def);
-  PF_ADD_FLOAT_SLIDERX("Highlight Mix", 0, 1, 0, 1, 1.0, 2, PF_ValueDisplayFlag_NONE, 0,
-                       AEX_HL_MIX);
-  AEFX_CLR_STRUCT(def);
-  PF_ADD_CHECKBOXX("Highlight Show Mask", FALSE, 0, AEX_HL_SHOW_MASK);
+  PF_END_TOPIC(AEX_GRP_ADVANCED_END);
 
   if (!err)
     out_data->num_params = AEX_NUM_PARAMS;
@@ -202,6 +297,19 @@ PF_Err Render(PF_InData* in_data, PF_OutData* out_data, PF_ParamDef* params[], P
     return passthrough();
   }
 
+  const int view = params[AEX_VIEW]->u.pd.value > 0 ? params[AEX_VIEW]->u.pd.value - 1 : 0;
+  if (view == 1) {
+    Logf("aex render: view source %dx%d", (int)w, (int)h);
+    return passthrough();
+  }
+  if (view == 4) {
+    pix::CopyPassthrough(src, dst);
+    pix::RestoreHighlights(src, dst, static_cast<float>(params[AEX_HL_THRESHOLD]->u.fs_d.value),
+                           static_cast<float>(params[AEX_HL_SOFTNESS]->u.fs_d.value),
+                           static_cast<float>(params[AEX_HL_MIX]->u.fs_d.value), true);
+    return PF_Err_NONE;
+  }
+
   if (EnvTruthy(L"DLSSNR_PASSTHROUGH")) {
     Logf("aex render: passthrough (env) %dx%d", (int)w, (int)h);
     return passthrough();
@@ -217,10 +325,17 @@ PF_Err Render(PF_InData* in_data, PF_OutData* out_data, PF_ParamDef* params[], P
     return passthrough();
   }
 
-  std::vector<uint8_t> packed, outPacked;
+  std::vector<uint8_t> packed8, out8;
+  std::vector<float> packedF, outF;
+  const bool deep = pix::PackAsFloat(src);
   // PF_EffectWorld rows are top-to-bottom; no vertical conversion is needed.
-  pix::PackRgba8(src, packed, /*flipVert=*/false);
-  outPacked.resize(packed.size());
+  if (deep) {
+    pix::PackRgba32f(src, packedF, /*flipVert=*/false);
+    outF.resize(packedF.size());
+  } else {
+    pix::PackRgba8(src, packed8, /*flipVert=*/false);
+    out8.resize(packed8.size());
+  }
   nr_eval_desc desc{};
   desc.width = static_cast<int32_t>(w);
   desc.height = static_cast<int32_t>(h);
@@ -237,30 +352,142 @@ PF_Err Render(PF_InData* in_data, PF_OutData* out_data, PF_ParamDef* params[], P
   desc.model.local_tone = static_cast<float>(params[AEX_LOCAL_TONE]->u.fs_d.value);
   desc.model.skin = static_cast<float>(params[AEX_SKIN]->u.fs_d.value);
   desc.model.global_tone = static_cast<float>(params[AEX_GLOBAL_TONE]->u.fs_d.value);
-  // Motion controls remain in the compatible UI, but this engine uses dummy zero MVec.
   desc.model.preset = params[AEX_PRESET]->u.sd.value;
   desc.hdr = params[AEX_HDR]->u.bd.value != FALSE;
   desc.model.auto_mask = params[AEX_AUTO_MASK]->u.bd.value != FALSE;
   desc.runtime_dir = runtime.c_str();
-  desc.in_rgba = packed.data();
-  desc.out_rgba = outPacked.data();
-  Logf("aex render: nr_eval %dx%d request=%u:%u intensity=%.2f style=%u srcfmt=%d dstfmt=%d",
+  desc.format = deep ? NR_PIX_RGBA32F : NR_PIX_RGBA8;
+  desc.frame_id = in_data->current_time;
+  desc.frame_step = in_data->time_step > 0 ? in_data->time_step : 0;
+  {
+    const int mode = params[AEX_FG_MODE]->u.pd.value;
+    desc.fg_mode = (mode <= 1) ? NR_FG_ALWAYS_RESET : NR_FG_LOCK;
+  }
+  desc.fg_coalesce = params[AEX_FG_COALESCE]->u.bd.value != FALSE;
+  {
+    const int srcMode = params[AEX_MVEC_SOURCE]->u.pd.value;
+    desc.mvec_source = static_cast<nr_guide_source>(srcMode > 0 ? srcMode - 1 : 0);
+  }
+  {
+    const int q = params[AEX_NVOF_QUALITY]->u.pd.value;
+    desc.nvof_quality = static_cast<nr_nvof_quality>(q > 0 ? q - 1 : 1);
+  }
+  desc.nvof_hint = params[AEX_NVOF_HINT]->u.bd.value != FALSE;
+  {
+    const int srcMode = params[AEX_DEPTH_SOURCE]->u.pd.value;
+    desc.depth_source = static_cast<nr_guide_source>(srcMode > 0 ? srcMode - 1 : 0);
+  }
+  desc.dav2_interval = params[AEX_DAV2_INTERVAL]->u.sd.value;
+  desc.dav2_ema = static_cast<float>(params[AEX_DAV2_EMA]->u.fs_d.value);
+  desc.in_rgba = deep ? static_cast<const void*>(packedF.data()) : packed8.data();
+  desc.out_rgba = deep ? static_cast<void*>(outF.data()) : out8.data();
+  std::vector<uint8_t> prev8;
+  std::vector<float> prevF;
+  PF_ParamDef prevParam;
+  AEFX_CLR_STRUCT(prevParam);
+  bool prevChecked = false;
+  if (in_data->time_step > 0 && in_data->current_time >= in_data->time_step &&
+      PF_CHECKOUT_PARAM(in_data, AEX_INPUT, in_data->current_time - in_data->time_step,
+                        in_data->time_step, in_data->time_scale, &prevParam) == PF_Err_NONE) {
+    prevChecked = true;
+    if (prevParam.u.ld.data) {
+      PF_PixelFormat prevFmt = inputFormat;
+      {
+        AEFX_SuiteScoper<PF_WorldSuite2> ws(in_data, kPFWorldSuite, kPFWorldSuiteVersion2, out_data);
+        if (ws->PF_GetPixelFormat(&prevParam.u.ld, &prevFmt) != PF_Err_NONE)
+          prevFmt = inputFormat;
+      }
+      pix::PixWorld prevWorld = MakeAexWorld(&prevParam.u.ld, prevFmt);
+      if (prevWorld.width == w && prevWorld.height == h && prevWorld.bytesPerComp == src.bytesPerComp) {
+        if (deep) {
+          pix::PackRgba32f(prevWorld, prevF, /*flipVert=*/false);
+          desc.in_prev_rgba = prevF.data();
+        } else {
+          pix::PackRgba8(prevWorld, prev8, /*flipVert=*/false);
+          desc.in_prev_rgba = prev8.data();
+        }
+      }
+    }
+  }
+  std::vector<float> guideMvec, guideDepth;
+  PF_ParamDef mvecParam, depthParam;
+  AEFX_CLR_STRUCT(mvecParam);
+  AEFX_CLR_STRUCT(depthParam);
+  bool mvecChecked = false, depthChecked = false;
+  if (desc.mvec_source == NR_GUIDE_INPUT &&
+      PF_CHECKOUT_PARAM(in_data, AEX_MVEC_LAYER, in_data->current_time, in_data->time_step,
+                        in_data->time_scale, &mvecParam) == PF_Err_NONE) {
+    mvecChecked = true;
+    if (mvecParam.u.ld.data) {
+      PF_PixelFormat fmt = inputFormat;
+      {
+        AEFX_SuiteScoper<PF_WorldSuite2> ws(in_data, kPFWorldSuite, kPFWorldSuiteVersion2, out_data);
+        if (ws->PF_GetPixelFormat(&mvecParam.u.ld, &fmt) != PF_Err_NONE) fmt = inputFormat;
+      }
+      pix::PixWorld world = MakeAexWorld(&mvecParam.u.ld, fmt);
+      if (world.width == w && world.height == h) {
+        pix::PackMvec(world, guideMvec, false, params[AEX_MVEC_DIR]->u.pd.value > 1,
+                      params[AEX_MVEC_UNIT]->u.pd.value > 1,
+                      params[AEX_MVEC_ENC]->u.pd.value <= 1,
+                      static_cast<float>(params[AEX_MVEC_RANGE]->u.fs_d.value));
+        desc.in_mvec = guideMvec.data();
+      }
+    }
+  }
+  if (desc.depth_source == NR_GUIDE_INPUT &&
+      PF_CHECKOUT_PARAM(in_data, AEX_DEPTH_LAYER, in_data->current_time, in_data->time_step,
+                        in_data->time_scale, &depthParam) == PF_Err_NONE) {
+    depthChecked = true;
+    if (depthParam.u.ld.data) {
+      PF_PixelFormat fmt = inputFormat;
+      {
+        AEFX_SuiteScoper<PF_WorldSuite2> ws(in_data, kPFWorldSuite, kPFWorldSuiteVersion2, out_data);
+        if (ws->PF_GetPixelFormat(&depthParam.u.ld, &fmt) != PF_Err_NONE) fmt = inputFormat;
+      }
+      pix::PixWorld world = MakeAexWorld(&depthParam.u.ld, fmt);
+      if (world.width == w && world.height == h) {
+        pix::PackDepth(world, guideDepth, false, params[AEX_DEPTH_CONV]->u.pd.value > 1);
+        desc.in_depth = guideDepth.data();
+      }
+    }
+  }
+  const size_t pixels = static_cast<size_t>(w) * h;
+  std::vector<float> usedMvec(pixels * 2, 0.f), usedDepth(pixels, 0.f);
+  desc.out_mvec = usedMvec.data();
+  desc.out_depth = usedDepth.data();
+  desc.maps_only = (view == 2 || view == 3);
+  Logf("aex render: nr_eval %dx%d request=%u:%u intensity=%.2f style=%u srcfmt=%d dstfmt=%d format=%s frame=%lld step=%lld fg=%d coalesce=%d prev=%d mvec=%d z=%d view=%d",
        (int)w, (int)h, desc.instance_id, desc.request_id, desc.model.intensity,
-       desc.model.style, (int)inputFormat, (int)outputFormat);
+       desc.model.style, (int)inputFormat, (int)outputFormat, deep ? "RGBA32F" : "RGBA8",
+       static_cast<long long>(desc.frame_id), static_cast<long long>(desc.frame_step),
+       static_cast<int>(desc.fg_mode), desc.fg_coalesce, desc.in_prev_rgba ? 1 : 0,
+       desc.in_mvec ? 1 : 0, desc.in_depth ? 1 : 0, view);
 
   nr_status status = engine_client::Eval(desc);
+  if (prevChecked)
+    PF_CHECKIN_PARAM(in_data, &prevParam);
+  if (mvecChecked)
+    PF_CHECKIN_PARAM(in_data, &mvecParam);
+  if (depthChecked)
+    PF_CHECKIN_PARAM(in_data, &depthParam);
   if (Aborted(in_data)) {
     engine_client::Cancel(desc.instance_id, desc.request_id);
     status = NR_ERR_SUPERSEDED;
   }
   if (status == NR_OK) {
-    pix::UnpackRgba8(dst, outPacked, /*flipVert=*/false);
-    const bool protect = params[AEX_HL_PROTECT]->u.bd.value != FALSE;
-    const bool showMask = params[AEX_HL_SHOW_MASK]->u.bd.value != FALSE;
-    if (protect || showMask) {
-      pix::RestoreHighlights(src, dst, static_cast<float>(params[AEX_HL_THRESHOLD]->u.fs_d.value),
-                             static_cast<float>(params[AEX_HL_SOFTNESS]->u.fs_d.value),
-                             static_cast<float>(params[AEX_HL_MIX]->u.fs_d.value), showMask);
+    if (view == 2) {
+      pix::VizDepth(dst, usedDepth.data(), false);
+    } else if (view == 3) {
+      pix::VizMvec(dst, usedMvec.data(), false);
+    } else {
+      if (deep) pix::UnpackRgba32f(dst, outF, /*flipVert=*/false);
+      else pix::UnpackRgba8(dst, out8, /*flipVert=*/false);
+      const bool protect = params[AEX_HL_PROTECT]->u.bd.value != FALSE;
+      if (protect) {
+        pix::RestoreHighlights(src, dst, static_cast<float>(params[AEX_HL_THRESHOLD]->u.fs_d.value),
+                               static_cast<float>(params[AEX_HL_SOFTNESS]->u.fs_d.value),
+                               static_cast<float>(params[AEX_HL_MIX]->u.fs_d.value), false);
+      }
     }
     Logf("aex render: nr_eval OK request=%u:%u", desc.instance_id, desc.request_id);
   } else {

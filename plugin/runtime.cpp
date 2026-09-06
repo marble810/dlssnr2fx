@@ -3,11 +3,10 @@
 #include <windows.h>
 
 #include "log.h"
-
-#include <mutex>
+#include "srw.h"
 
 namespace {
-std::mutex gRuntimeMutex;
+SRWLOCK gRuntimeMutex = SRWLOCK_INIT;
 std::wstring gCached;
 
 std::wstring ParentDir(std::wstring path) {
@@ -46,7 +45,7 @@ bool EnvTruthy(const wchar_t* name) {
 }
 
 std::wstring FindRuntimeDir() {
-  std::lock_guard<std::mutex> guard(gRuntimeMutex);
+  SrwExclusive guard(gRuntimeMutex);
   wchar_t env[MAX_PATH]{};
   DWORD n = GetEnvironmentVariableW(L"DLSSNR_RUNTIME_DIR", env, MAX_PATH);
   if (n > 0 && n < MAX_PATH && HasNgxRuntime(env)) {

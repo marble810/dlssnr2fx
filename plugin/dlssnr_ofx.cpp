@@ -59,8 +59,18 @@ static OfxStatus CreateInstance(OfxImageEffectHandle effect) {
   data->lockInit = true;
   data->instanceId = gNextInstanceId.fetch_add(1) + 1;
 
-  gEffectHost->clipGetHandle(effect, kOfxImageEffectSimpleSourceClipName, &data->sourceClip, nullptr);
-  gEffectHost->clipGetHandle(effect, kOfxImageEffectOutputClipName, &data->outputClip, nullptr);
+  if (gEffectHost->clipGetHandle(effect, kOfxImageEffectSimpleSourceClipName, &data->sourceClip,
+                                 nullptr) != kOfxStatOK)
+    data->sourceClip = nullptr;
+  if (gEffectHost->clipGetHandle(effect, kOfxImageEffectOutputClipName, &data->outputClip,
+                                 nullptr) != kOfxStatOK)
+    data->outputClip = nullptr;
+  if (gEffectHost->clipGetHandle(effect, kClipMVec, &data->mvecClip, nullptr) != kOfxStatOK)
+    data->mvecClip = nullptr;
+  if (gEffectHost->clipGetHandle(effect, kClipDepth, &data->depthClip, nullptr) != kOfxStatOK)
+    data->depthClip = nullptr;
+  gPropHost->propSetInt(props, kOfxImageEffectInstancePropSequentialRender, 0, 2);
+  gParamHost->paramGetHandle(paramSet, kParamView, &data->viewParam, nullptr);
   gParamHost->paramGetHandle(paramSet, kParamIntensity, &data->intensityParam, nullptr);
   gParamHost->paramGetHandle(paramSet, kParamStyle, &data->styleParam, nullptr);
   gParamHost->paramGetHandle(paramSet, kParamDetail, &data->detailParam, nullptr);
@@ -74,14 +84,24 @@ static OfxStatus CreateInstance(OfxImageEffectHandle effect) {
   gParamHost->paramGetHandle(paramSet, kParamHdr, &data->hdrParam, nullptr);
   gParamHost->paramGetHandle(paramSet, kParamAutoMask, &data->autoMaskParam, nullptr);
   gParamHost->paramGetHandle(paramSet, kParamAdapter, &data->adapterParam, nullptr);
-  gParamHost->paramGetHandle(paramSet, kParamMotion, &data->motionParam, nullptr);
-  gParamHost->paramGetHandle(paramSet, kParamMotionEngine, &data->motionEngineParam, nullptr);
-  gParamHost->paramGetHandle(paramSet, kParamMotionVis, &data->motionVisParam, nullptr);
   gParamHost->paramGetHandle(paramSet, kParamHlProtect, &data->hlProtectParam, nullptr);
   gParamHost->paramGetHandle(paramSet, kParamHlThreshold, &data->hlThresholdParam, nullptr);
   gParamHost->paramGetHandle(paramSet, kParamHlSoftness, &data->hlSoftnessParam, nullptr);
   gParamHost->paramGetHandle(paramSet, kParamHlMix, &data->hlMixParam, nullptr);
   gParamHost->paramGetHandle(paramSet, kParamHlShowMask, &data->hlShowMaskParam, nullptr);
+  gParamHost->paramGetHandle(paramSet, kParamFgMode, &data->fgModeParam, nullptr);
+  gParamHost->paramGetHandle(paramSet, kParamFgCoalesce, &data->fgCoalesceParam, nullptr);
+  gParamHost->paramGetHandle(paramSet, kParamMvecSource, &data->mvecSourceParam, nullptr);
+  gParamHost->paramGetHandle(paramSet, kParamMvecDir, &data->mvecDirParam, nullptr);
+  gParamHost->paramGetHandle(paramSet, kParamMvecUnit, &data->mvecUnitParam, nullptr);
+  gParamHost->paramGetHandle(paramSet, kParamMvecEnc, &data->mvecEncParam, nullptr);
+  gParamHost->paramGetHandle(paramSet, kParamMvecRange, &data->mvecRangeParam, nullptr);
+  gParamHost->paramGetHandle(paramSet, kParamNvofQuality, &data->nvofQualityParam, nullptr);
+  gParamHost->paramGetHandle(paramSet, kParamNvofHint, &data->nvofHintParam, nullptr);
+  gParamHost->paramGetHandle(paramSet, kParamDepthSource, &data->depthSourceParam, nullptr);
+  gParamHost->paramGetHandle(paramSet, kParamDepthConv, &data->depthConvParam, nullptr);
+  gParamHost->paramGetHandle(paramSet, kParamDav2Interval, &data->dav2IntervalParam, nullptr);
+  gParamHost->paramGetHandle(paramSet, kParamDav2Ema, &data->dav2EmaParam, nullptr);
 
   gPropHost->propSetPointer(props, kOfxPropInstanceData, 0, data);
   return kOfxStatOK;

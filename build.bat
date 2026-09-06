@@ -16,7 +16,7 @@ if errorlevel 1 (
 set "CFLAGS=/nologo /O2 /std:c++17 /EHsc /MD /W3 /DNOMINMAX /DWIN32_LEAN_AND_MEAN /I third_party\ofx\include /I engine"
 set "BUNDLE=dist\dlssnr.ofx.bundle\Contents\Win64"
 set "SRCS=plugin\dlssnr_ofx.cpp plugin\describe.cpp plugin\render.cpp plugin\engine_client.cpp plugin\log.cpp plugin\pixio.cpp plugin\runtime.cpp"
-set "ENGINE_SRCS=engine\session.cpp engine\gpu.cpp engine\ngx.cpp engine\composite.cpp"
+set "ENGINE_SRCS=engine\session.cpp engine\gpu.cpp engine\ngx.cpp engine\composite.cpp engine\mvec.cpp engine\nvof.cpp engine\dav2.cpp"
 
 if "%~1"=="" goto plugin
 if /I "%~1"=="engine" goto engine
@@ -39,7 +39,7 @@ exit /b 0
 
 :engine
 mkdir dist\engine 2>nul
-cl %CFLAGS% /D DLSSNR2FX_EXPORTS %ENGINE_SRCS% /LD /Fe:dist\engine\dlssnr2fx.dll /link /DEF:engine\dlssnr2fx.def d3d12.lib dxgi.lib ole32.lib
+cl %CFLAGS% /D DLSSNR2FX_EXPORTS %ENGINE_SRCS% /LD /Fe:dist\engine\dlssnr2fx.dll /link /DEF:engine\dlssnr2fx.def d3d12.lib d3d11.lib dxgi.lib ole32.lib
 if errorlevel 1 exit /b 1
 del /q *.obj dist\engine\dlssnr2fx.lib dist\engine\dlssnr2fx.exp 2>nul
 echo Built dist\engine\dlssnr2fx.dll
@@ -142,6 +142,10 @@ if errorlevel 1 (
 )
 copy /Y dist\engine\dlssnr2fx.dll dist\aex\dlssnr2fx.dll >nul
 if errorlevel 1 exit /b 1
+if exist runtime\nvngx_dlssnr.dll if not exist dist\aex\runtime\nvngx_dlssnr.dll (
+  mklink /J dist\aex\runtime "%CD%\runtime" >nul 2>&1
+  if exist dist\aex\runtime\nvngx_dlssnr.dll echo linked dist\aex\runtime -^> runtime\
+)
 del /q *.obj build\aex\dlssnr_build.aex build\aex\dlssnr_build.lib build\aex\dlssnr_build.exp 2>nul
 echo Built dist\aex\dlssnr.aex and dlssnr2fx.dll
 dumpbin /exports dist\aex\dlssnr.aex | findstr EffectMain
@@ -152,7 +156,7 @@ call "%~f0" engine
 if errorlevel 1 exit /b 1
 cl /nologo /W3 /TC /I engine /c test\engine_header_c.c /Fo:test\engine_header_c.obj
 if errorlevel 1 exit /b 1
-cl %CFLAGS% test\engine_selftest.cpp engine\composite.cpp /Fe:test\engine_selftest.exe
+cl %CFLAGS% test\engine_selftest.cpp engine\composite.cpp engine\mvec.cpp /Fe:test\engine_selftest.exe
 if errorlevel 1 exit /b 1
 cl %CFLAGS% test\pixio_selftest.cpp plugin\pixio.cpp /Fe:test\pixio_selftest.exe
 if errorlevel 1 exit /b 1
