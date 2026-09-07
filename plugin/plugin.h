@@ -4,7 +4,6 @@
 
 #include <atomic>
 #include <string>
-#include <vector>
 
 #include "ofxImageEffect.h"
 #include "ofxMultiThread.h"
@@ -98,10 +97,6 @@ struct InstanceData {
   std::atomic<uint32_t> nextRequest{0};
   CRITICAL_SECTION renderLock{};
   bool lockInit = false;
-  std::vector<uint8_t> hold;
-  int holdW = 0;
-  int holdH = 0;
-  bool holdDeep = false;
 };
 
 extern OfxHost* gHost;

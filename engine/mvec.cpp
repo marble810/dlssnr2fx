@@ -23,7 +23,10 @@ void LumaRgba32f(const float* rgba, int w, int h, std::vector<uint8_t>& luma) {
   luma.resize(static_cast<size_t>(w) * h);
   for (int i = 0; i < w * h; ++i) {
     const float* p = rgba + i * 4;
-    float y = p[0] * 0.2126f + p[1] * 0.7152f + p[2] * 0.0722f;
+    float r = std::isfinite(p[0]) ? p[0] : 0.f;
+    float g = std::isfinite(p[1]) ? p[1] : 0.f;
+    float b = std::isfinite(p[2]) ? p[2] : 0.f;
+    float y = r * 0.2126f + g * 0.7152f + b * 0.0722f;
     y = std::max(0.f, std::min(1.f, y));
     luma[i] = static_cast<uint8_t>(y * 255.f + 0.5f);
   }

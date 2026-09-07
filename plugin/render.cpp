@@ -9,9 +9,7 @@
 
 #include <cmath>
 #include <cstring>
-#include <list>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
 namespace {
@@ -100,150 +98,6 @@ void FillNrParams(InstanceData* data, nr_eval_desc& desc) {
   desc.dav2_ema = static_cast<float>(d);
 }
 
-struct HoldKey {
-  int64_t frame = 0;
-  int w = 0;
-  int h = 0;
-  bool deep = false;
-  int view = 0;
-  uint32_t style = 0;
-  uint32_t preset = 0;
-  int hdr = 0;
-  int auto_mask = 0;
-  int ui = 0;
-  int fg_mode = 0;
-  int mvec_source = 0;
-  int depth_source = 0;
-  int nvof_quality = 0;
-  int nvof_hint = 0;
-  int mvec_enc = 0;
-  float mvec_range = 0;
-  int dav2_interval = 0;
-  float dav2_ema = 0;
-  int hl_protect = 0;
-  int hl_show = 0;
-  float intensity = 0;
-  float detail = 0;
-  float color = 0;
-  float local_structure = 0;
-  float local_tone = 0;
-  float skin = 0;
-  float global_tone = 0;
-  float hl_thr = 0;
-  float hl_soft = 0;
-  float hl_mix = 0;
-};
-
-bool SameLook(const HoldKey& a, const HoldKey& b) {
-  return a.w == b.w && a.h == b.h && a.deep == b.deep && a.view == b.view && a.style == b.style && a.preset == b.preset &&
-         a.hdr == b.hdr && a.auto_mask == b.auto_mask && a.ui == b.ui && a.fg_mode == b.fg_mode &&
-         a.mvec_source == b.mvec_source && a.depth_source == b.depth_source &&
-         a.nvof_quality == b.nvof_quality && a.nvof_hint == b.nvof_hint &&
-         a.mvec_enc == b.mvec_enc && a.mvec_range == b.mvec_range &&
-         a.dav2_interval == b.dav2_interval && a.dav2_ema == b.dav2_ema &&
-         a.hl_protect == b.hl_protect && a.hl_show == b.hl_show && a.intensity == b.intensity &&
-         a.detail == b.detail && a.color == b.color && a.local_structure == b.local_structure &&
-         a.local_tone == b.local_tone && a.skin == b.skin && a.global_tone == b.global_tone &&
-         a.hl_thr == b.hl_thr && a.hl_soft == b.hl_soft && a.hl_mix == b.hl_mix;
-}
-
-HoldKey MakeHoldKey(InstanceData* data, const nr_eval_desc& desc, bool deep) {
-  HoldKey k;
-  k.frame = desc.frame_id;
-  k.w = desc.width;
-  k.h = desc.height;
-  k.deep = deep;
-  if (data->viewParam) gParamHost->paramGetValue(data->viewParam, &k.view);
-  k.style = desc.model.style;
-  k.preset = desc.model.preset;
-  k.hdr = desc.hdr;
-  k.auto_mask = desc.model.auto_mask;
-  k.ui = desc.model.ui_correction;
-  k.fg_mode = static_cast<int>(desc.fg_mode);
-  k.mvec_source = static_cast<int>(desc.mvec_source);
-  k.depth_source = static_cast<int>(desc.depth_source);
-  k.nvof_quality = static_cast<int>(desc.nvof_quality);
-  k.nvof_hint = desc.nvof_hint;
-  if (data->mvecEncParam) gParamHost->paramGetValue(data->mvecEncParam, &k.mvec_enc);
-  {
-    double range = 64.0;
-    if (data->mvecRangeParam) gParamHost->paramGetValue(data->mvecRangeParam, &range);
-    k.mvec_range = static_cast<float>(range);
-  }
-  k.dav2_interval = desc.dav2_interval;
-  k.dav2_ema = desc.dav2_ema;
-  k.intensity = desc.model.intensity;
-  k.detail = desc.detail;
-  k.color = desc.color;
-  k.local_structure = desc.model.local_structure;
-  k.local_tone = desc.model.local_tone;
-  k.skin = desc.model.skin;
-  k.global_tone = desc.model.global_tone;
-  int i = 0;
-  double d = 0;
-  if (data->hlProtectParam) gParamHost->paramGetValue(data->hlProtectParam, &i);
-  k.hl_protect = i;
-  i = 0;
-  if (data->hlShowMaskParam) gParamHost->paramGetValue(data->hlShowMaskParam, &i);
-  k.hl_show = i;
-  d = 0.80;
-  if (data->hlThresholdParam) gParamHost->paramGetValue(data->hlThresholdParam, &d);
-  k.hl_thr = static_cast<float>(d);
-  d = 0.15;
-  if (data->hlSoftnessParam) gParamHost->paramGetValue(data->hlSoftnessParam, &d);
-  k.hl_soft = static_cast<float>(d);
-  d = 1.0;
-  if (data->hlMixParam) gParamHost->paramGetValue(data->hlMixParam, &d);
-  k.hl_mix = static_cast<float>(d);
-  return k;
-}
-
-struct SharedHold {
-  SRWLOCK mu = SRWLOCK_INIT;
-  struct Entry {
-    HoldKey key;
-    std::vector<uint8_t> bytes;
-  };
-  Entry last;
-  std::unordered_map<int64_t, Entry> frames;
-  std::list<int64_t> order;
-  static constexpr size_t kMaxFrames = 48;
-
-  bool Unpack(pix::PixWorld& dst, const HoldKey& key, bool exactFrame) {
-    SrwExclusive guard(mu);
-    const Entry* src = nullptr;
-    auto it = frames.find(key.frame);
-    if (it != frames.end() && SameLook(it->second.key, key)) src = &it->second;
-    else if (!exactFrame && !last.bytes.empty() && SameLook(last.key, key)) src = &last;
-    if (!src || src->bytes.empty()) return false;
-    if (key.deep) {
-      std::vector<float> tmp(src->bytes.size() / sizeof(float));
-      if (tmp.empty()) return false;
-      std::memcpy(tmp.data(), src->bytes.data(), tmp.size() * sizeof(float));
-      pix::UnpackRgba32f(dst, tmp, true);
-    } else {
-      pix::UnpackRgba8(dst, src->bytes, true);
-    }
-    return true;
-  }
-
-  void Store(const HoldKey& key, const void* pixels, size_t bytes) {
-    SrwExclusive guard(mu);
-    Entry e;
-    e.key = key;
-    e.bytes.assign(static_cast<const uint8_t*>(pixels), static_cast<const uint8_t*>(pixels) + bytes);
-    last = e;
-    frames[key.frame] = e;
-    order.remove(key.frame);
-    order.push_back(key.frame);
-    while (order.size() > kMaxFrames) {
-      frames.erase(order.front());
-      order.pop_front();
-    }
-  }
-};
-SharedHold gHold;
-
 OfxStatus Render(OfxImageEffectHandle effect, OfxPropertySetHandle inArgs,
                  OfxPropertySetHandle /*outArgs*/) {
   InstanceData* data = GetInstanceData(effect);
@@ -268,19 +122,13 @@ OfxStatus Render(OfxImageEffectHandle effect, OfxPropertySetHandle inArgs,
   }
   const bool deepSrc = pix::PackAsFloat(src);
   const int64_t frameId = static_cast<int64_t>(std::llround(time));
-  nr_eval_desc look{};
-  look.width = src.width;
-  look.height = src.height;
-  look.format = deepSrc ? NR_PIX_RGBA32F : NR_PIX_RGBA8;
-  look.frame_id = frameId;
-  FillNrParams(data, look);
-  int view = 0;
-  if (data->viewParam) gParamHost->paramGetValue(data->viewParam, &view);
-  const HoldKey holdKey = MakeHoldKey(data, look, deepSrc);
-  auto replayHold = [&](bool exact) -> bool { return gHold.Unpack(dst, holdKey, exact); };
-  auto finish = [&](bool copy) {
-    if (copy && !replayHold(false)) pix::CopyPassthrough(src, dst);
-    gEffectHost->clipReleaseImage(srcImg); gEffectHost->clipReleaseImage(dstImg);
+  auto release = [&]() {
+    gEffectHost->clipReleaseImage(srcImg);
+    gEffectHost->clipReleaseImage(dstImg);
+  };
+  auto finishCopy = [&]() {
+    pix::CopyPassthrough(src, dst);
+    release();
     return kOfxStatOK;
   };
   auto aborted = [&]() { return gEffectHost->abort && gEffectHost->abort(effect); };
@@ -294,9 +142,11 @@ OfxStatus Render(OfxImageEffectHandle effect, OfxPropertySetHandle inArgs,
     if (data->hlSoftnessParam) gParamHost->paramGetValue(data->hlSoftnessParam, &soft);
     if (data->hlMixParam) gParamHost->paramGetValue(data->hlMixParam, &mix);
   };
+  int view = 0;
+  if (data->viewParam) gParamHost->paramGetValue(data->viewParam, &view);
   if (view == kViewSource) {
     Logf("render: view source %dx%d", src.width, src.height);
-    return finish(true);
+    return finishCopy();
   }
   if (view == kViewHighlight) {
     int protect = 1;
@@ -305,26 +155,21 @@ OfxStatus Render(OfxImageEffectHandle effect, OfxPropertySetHandle inArgs,
     pix::CopyPassthrough(src, dst);
     pix::RestoreHighlights(src, dst, static_cast<float>(thr), static_cast<float>(soft),
                            static_cast<float>(mix), true);
-    gEffectHost->clipReleaseImage(srcImg); gEffectHost->clipReleaseImage(dstImg);
+    release();
     return kOfxStatOK;
   }
 
   if (EnvTruthy(L"DLSSNR_PASSTHROUGH")) {
     Logf("render: passthrough (env) %dx%d", src.width, src.height);
-    return finish(true);
+    return finishCopy();
   }
   if (scale[0] < 0.4 || scale[1] < 0.4) {
     Logf("render: skip mipmap %dx%d scale=%.3f,%.3f", src.width, src.height, scale[0], scale[1]);
-    return finish(true);
+    return finishCopy();
   }
   if (aborted()) {
-    if (replayHold(true)) {
-      Logf("render: abort before NR frame=%lld hold", static_cast<long long>(frameId));
-      gEffectHost->clipReleaseImage(srcImg); gEffectHost->clipReleaseImage(dstImg);
-      return kOfxStatOK;
-    }
     Logf("render: abort before NR frame=%lld skip", static_cast<long long>(frameId));
-    gEffectHost->clipReleaseImage(srcImg); gEffectHost->clipReleaseImage(dstImg);
+    release();
     return kOfxStatFailed;
   }
 
@@ -333,13 +178,7 @@ OfxStatus Render(OfxImageEffectHandle effect, OfxPropertySetHandle inArgs,
   std::wstring runtime = FindRuntimeDir();
   if (runtime.empty()) {
     Logf("render: runtime NOT found; passthrough");
-    return finish(true);
-  }
-
-  if (gHold.Unpack(dst, holdKey, true)) {
-    Logf("render: coalesce frame=%lld from shared hold", static_cast<long long>(frameId));
-    gEffectHost->clipReleaseImage(srcImg); gEffectHost->clipReleaseImage(dstImg);
-    return kOfxStatOK;
+    return finishCopy();
   }
 
   std::vector<uint8_t> packed8, out8;
@@ -361,7 +200,7 @@ OfxStatus Render(OfxImageEffectHandle effect, OfxPropertySetHandle inArgs,
   desc.in_rgba = deep ? static_cast<const void*>(packedF.data()) : packed8.data();
   desc.out_rgba = deep ? static_cast<void*>(outF.data()) : out8.data();
   FillNrParams(data, desc);
-  desc.frame_id = static_cast<int64_t>(std::llround(time));
+  desc.frame_id = frameId;
   desc.frame_step = 1;
   std::vector<uint8_t> prev8;
   std::vector<float> prevF;
@@ -424,37 +263,27 @@ OfxStatus Render(OfxImageEffectHandle effect, OfxPropertySetHandle inArgs,
        desc.in_mvec ? 1 : 0, desc.in_depth ? 1 : 0, view);
   nr_status status = engine_client::Eval(desc);
   if (aborted()) engine_client::Cancel(desc.instance_id, request);
-  if (status == NR_OK) {
-    if (view == kViewDepth) {
-      pix::VizDepth(dst, usedDepth.data(), true);
-    } else if (view == kViewMvec) {
-      pix::VizMvec(dst, usedMvec.data(), true);
-    } else {
-      if (deep) pix::UnpackRgba32f(dst, outF, true);
-      else pix::UnpackRgba8(dst, out8, true);
-      int protect = 0;
-      double thr = 0.80, soft = 0.15, mix = 1.0;
-      highlightParams(thr, soft, mix, protect);
-      if (protect)
-        pix::RestoreHighlights(src, dst, static_cast<float>(thr), static_cast<float>(soft),
-                               static_cast<float>(mix), false);
-    }
-    if (deep)
-      gHold.Store(holdKey, outF.data(), outF.size() * sizeof(float));
-    else
-      gHold.Store(holdKey, out8.data(), out8.size());
-    Logf("render: nr_eval OK request=%u:%u", desc.instance_id, request);
-  } else {
-    if (replayHold(true)) {
-      Logf("render: nr_eval %s request=%u:%u; hold", engine_client::StatusName(status),
-           desc.instance_id, request);
-    } else {
-      Logf("render: nr_eval %s request=%u:%u; skip", engine_client::StatusName(status),
-           desc.instance_id, request);
-      gEffectHost->clipReleaseImage(srcImg); gEffectHost->clipReleaseImage(dstImg);
-      return kOfxStatFailed;
-    }
+  if (status != NR_OK) {
+    Logf("render: nr_eval %s request=%u:%u; skip", engine_client::StatusName(status),
+         desc.instance_id, request);
+    release();
+    return kOfxStatFailed;
   }
-  gEffectHost->clipReleaseImage(srcImg); gEffectHost->clipReleaseImage(dstImg);
+  if (view == kViewDepth) {
+    pix::VizDepth(dst, usedDepth.data(), true);
+  } else if (view == kViewMvec) {
+    pix::VizMvec(dst, usedMvec.data(), true);
+  } else {
+    if (deep) pix::UnpackRgba32f(dst, outF, true);
+    else pix::UnpackRgba8(dst, out8, true);
+    int protect = 0;
+    double thr = 0.80, soft = 0.15, mix = 1.0;
+    highlightParams(thr, soft, mix, protect);
+    if (protect)
+      pix::RestoreHighlights(src, dst, static_cast<float>(thr), static_cast<float>(soft),
+                             static_cast<float>(mix), false);
+  }
+  Logf("render: nr_eval OK request=%u:%u", desc.instance_id, request);
+  release();
   return kOfxStatOK;
 }

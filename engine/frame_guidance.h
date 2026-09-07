@@ -5,7 +5,8 @@
 // Host-side temporal contract for Feature 18:
 //   Coalesce — same instance+frame (+ matching output key): skip Evaluate
 //   Continue — keep snippet history (Auto: next forward frame; Lock: any later frame)
-//   Reset    — DLSSNR.Reset=1 (Always Reset, discontinuity, instance change)
+//   Reset    — explicit Reset, Always Reset, discontinuity, instance change, first eval
+// Explicit Reset and instance change always win over coalesce.
 enum class FrameGuidanceAction : uint8_t {
   Coalesce = 0,
   Reset = 1,
@@ -29,10 +30,10 @@ inline FrameGuidanceAction DecideFrameGuidance(
     bool sameOutputKey,
     FrameGuidanceMode mode = FrameGuidanceMode::Auto,
     bool coalesce = true) {
-  if (coalesce && haveLast && sameOutputKey)
-    return FrameGuidanceAction::Coalesce;
   if (forceReset || !haveLast || lastInstance != instance)
     return FrameGuidanceAction::Reset;
+  if (coalesce && sameOutputKey)
+    return FrameGuidanceAction::Coalesce;
   if (mode == FrameGuidanceMode::AlwaysReset)
     return FrameGuidanceAction::Reset;
   if (mode == FrameGuidanceMode::Lock)

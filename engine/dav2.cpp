@@ -44,9 +44,13 @@ void Rgba8ToRgb01(const uint8_t* rgba, int w, int h, std::vector<float>& rgb) {
 void Rgba32fToRgb01(const float* rgba, int w, int h, std::vector<float>& rgb) {
   rgb.resize(static_cast<size_t>(w) * h * 3);
   for (int i = 0; i < w * h; ++i) {
-    rgb[i * 3 + 0] = std::max(0.f, std::min(1.f, rgba[i * 4 + 0]));
-    rgb[i * 3 + 1] = std::max(0.f, std::min(1.f, rgba[i * 4 + 1]));
-    rgb[i * 3 + 2] = std::max(0.f, std::min(1.f, rgba[i * 4 + 2]));
+    auto q = [](float v) {
+      if (!std::isfinite(v)) v = 0.f;
+      return std::max(0.f, std::min(1.f, v));
+    };
+    rgb[i * 3 + 0] = q(rgba[i * 4 + 0]);
+    rgb[i * 3 + 1] = q(rgba[i * 4 + 1]);
+    rgb[i * 3 + 2] = q(rgba[i * 4 + 2]);
   }
 }
 

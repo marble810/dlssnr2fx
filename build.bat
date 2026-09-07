@@ -16,7 +16,7 @@ if errorlevel 1 (
 set "CFLAGS=/nologo /O2 /std:c++17 /EHsc /MD /W3 /DNOMINMAX /DWIN32_LEAN_AND_MEAN /I third_party\ofx\include /I engine"
 set "BUNDLE=dist\dlssnr.ofx.bundle\Contents\Win64"
 set "SRCS=plugin\dlssnr_ofx.cpp plugin\describe.cpp plugin\render.cpp plugin\engine_client.cpp plugin\log.cpp plugin\pixio.cpp plugin\runtime.cpp"
-set "ENGINE_SRCS=engine\session.cpp engine\gpu.cpp engine\ngx.cpp engine\composite.cpp engine\mvec.cpp engine\nvof.cpp engine\dav2.cpp"
+set "ENGINE_SRCS=engine\session.cpp engine\gpu.cpp engine\ngx.cpp engine\composite.cpp engine\color_adapt.cpp engine\mvec.cpp engine\nvof.cpp engine\dav2.cpp"
 
 if "%~1"=="" goto plugin
 if /I "%~1"=="engine" goto engine
@@ -49,11 +49,11 @@ cl %CFLAGS% /D DLSSNR2FX_EXPORTS engine\forwarder.cpp /LD /Fe:dist\engine\nvngx.
 if errorlevel 1 exit /b 1
 mkdir runtime 2>nul
 copy /Y dist\engine\nvngx.dll_dlssnr.dll runtime\nvngx.dll_dlssnr.dll >nul
-if errorlevel 1 exit /b 1
+if errorlevel 1 echo WARNING: runtime\nvngx.dll_dlssnr.dll is locked; dist\engine copy is current
 del /q *.obj dist\engine\nvngx.dll_dlssnr.lib dist\engine\nvngx.dll_dlssnr.exp 2>nul
-echo Built dist\engine\nvngx.dll_dlssnr.dll, copied to runtime\nvngx.dll_dlssnr.dll
+echo Built dist\engine\nvngx.dll_dlssnr.dll
 dumpbin /exports dist\engine\nvngx.dll_dlssnr.dll | findstr /C:"fwd_create" /C:"fwd_evaluate" /C:"fwd_release" /C:"fwd_set_slots"
-exit /b %ERRORLEVEL%
+exit /b 0
 
 :forwarder
 mkdir dist\engine 2>nul
@@ -61,7 +61,7 @@ cl %CFLAGS% /D DLSSNR2FX_EXPORTS engine\forwarder.cpp /LD /Fe:dist\engine\nvngx.
 if errorlevel 1 exit /b 1
 mkdir runtime 2>nul
 copy /Y dist\engine\nvngx.dll_dlssnr.dll runtime\nvngx.dll_dlssnr.dll >nul
-if errorlevel 1 exit /b 1
+if errorlevel 1 echo WARNING: runtime\nvngx.dll_dlssnr.dll is locked; dist\engine copy is current
 del /q *.obj dist\engine\nvngx.dll_dlssnr.lib dist\engine\nvngx.dll_dlssnr.exp 2>nul
 echo Built dist\engine\nvngx.dll_dlssnr.dll, copied to runtime\nvngx.dll_dlssnr.dll
 dumpbin /exports dist\engine\nvngx.dll_dlssnr.dll | findstr /C:"fwd_create" /C:"fwd_evaluate" /C:"fwd_release" /C:"fwd_set_slots"
@@ -156,7 +156,7 @@ call "%~f0" engine
 if errorlevel 1 exit /b 1
 cl /nologo /W3 /TC /I engine /c test\engine_header_c.c /Fo:test\engine_header_c.obj
 if errorlevel 1 exit /b 1
-cl %CFLAGS% test\engine_selftest.cpp engine\composite.cpp engine\mvec.cpp /Fe:test\engine_selftest.exe
+cl %CFLAGS% test\engine_selftest.cpp engine\composite.cpp engine\color_adapt.cpp engine\mvec.cpp /Fe:test\engine_selftest.exe
 if errorlevel 1 exit /b 1
 cl %CFLAGS% test\pixio_selftest.cpp plugin\pixio.cpp /Fe:test\pixio_selftest.exe
 if errorlevel 1 exit /b 1

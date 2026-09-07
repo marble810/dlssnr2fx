@@ -266,7 +266,7 @@ OfxStatus DescribeInContext(OfxImageEffectHandle effect, OfxPropertySetHandle in
   gParamHost->paramDefine(params, kOfxParamTypeBoolean, kParamFgCoalesce, &p);
   gPropHost->propSetString(p, kOfxPropLabel, 0, "Coalesce Same Frame");
   gPropHost->propSetInt(p, kOfxParamPropDefault, 0, 1);
-  FinishParam(p, "Skip NGX when the same instance renders the same frame again",
+  FinishParam(p, "Skip NGX when the same instance, inputs, and parameters render the same frame again",
               "grpFrameGuidance");
 
   gParamHost->paramDefine(params, kOfxParamTypeGroup, "grpAdvanced", &p);
@@ -282,7 +282,9 @@ OfxStatus DescribeInContext(OfxImageEffectHandle effect, OfxPropertySetHandle in
   gParamHost->paramDefine(params, kOfxParamTypeBoolean, kParamHdr, &p);
   gPropHost->propSetString(p, kOfxPropLabel, 0, "HDR / Linear");
   gPropHost->propSetInt(p, kOfxParamPropDefault, 0, 0);
-  FinishParam(p, "Feed linear colour instead of the sRGB proxy", "grpAdvanced");
+  FinishParam(p,
+              "Kept for 8-bit gamma blend compatibility. Float HDR uses a bounded model proxy plus residual reconstruction and is not clipped to [0,1].",
+              "grpAdvanced");
 
   gParamHost->paramDefine(params, kOfxParamTypeBoolean, kParamAutoMask, &p);
   gPropHost->propSetString(p, kOfxPropLabel, 0, "Auto Mask");

@@ -1,5 +1,7 @@
 #include "../engine/dlssnr2fx.h"
+#include "../engine/color_adapt.h"
 #include "../engine/composite.h"
+#include "../engine/eval_identity.h"
 #include "../engine/frame_guidance.h"
 #include "../engine/mvec.h"
 #include "../engine/session_policy.h"
@@ -9,8 +11,10 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <thread>
 #include <vector>
@@ -142,8 +146,10 @@ int main() {
     return Fail("frame guidance instance change resets");
   if (DecideFrameGuidance(true, 1, 10, 1, 11, 0, false, false) != FrameGuidanceAction::Reset)
     return Fail("frame guidance missing step resets");
-  if (DecideFrameGuidance(true, 1, 10, 1, 10, 1, true, true) != FrameGuidanceAction::Coalesce)
-    return Fail("frame guidance coalesce wins over force reset");
+  if (DecideFrameGuidance(true, 1, 10, 1, 10, 1, true, true) != FrameGuidanceAction::Reset)
+    return Fail("explicit reset must not be swallowed by coalesce");
+  if (DecideFrameGuidance(true, 1, 10, 2, 10, 1, false, true) != FrameGuidanceAction::Reset)
+    return Fail("instance change must not coalesce even if output key matches");
   if (DecideFrameGuidance(true, 1, 10, 1, 11, 1, false, false, FrameGuidanceMode::AlwaysReset) !=
       FrameGuidanceAction::Reset)
     return Fail("always-reset mode resets forward frames");
@@ -207,6 +213,73 @@ int main() {
   if (compositeF[0] != nrF[0] || compositeF[3] != origF[3])
     return Fail("RGBA32F detail=1 RGB endpoint");
 
+  {
+    const float hdrIn[] = {0.f, 1.f, 182.625f, 0.5f, -0.25f, 0.5f, 0.75f, 0.9f};
+    float proxy[8]{};
+    PrepareModelRgba32f(hdrIn, proxy, 2);
+    if (proxy[0] != 0.f || proxy[1] != 1.f || proxy[2] != 1.f || proxy[3] != 0.5f)
+      return Fail("HDR proxy clamps 0/1/182.625 and keeps in-range alpha");
+    if (proxy[4] != 0.f) return Fail("HDR proxy clamps finite negatives to 0");
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float inf = std::numeric_limits<float>::infinity();
+    const float bad[] = {nan, inf, -inf, 2.f};
+    float badProxy[4]{};
+    PrepareModelRgba32f(bad, badProxy, 1);
+    if (badProxy[0] != 0.f || badProxy[1] != 0.f || badProxy[2] != 0.f || badProxy[3] != 1.f)
+      return Fail("HDR proxy sanitizes NaN/Inf and clamps alpha");
+
+    float out[8]{};
+    ReconstructRgba32f(hdrIn, proxy, proxy, out, 2, 0.0f, 1.0f);
+    if (std::memcmp(hdrIn, out, sizeof(hdrIn)) != 0)
+      return Fail("detail=0 reconstruct is exact original including HDR and negatives");
+    ReconstructRgba32f(hdrIn, proxy, proxy, out, 2, 1.0f, 1.0f);
+    if (out[2] != 182.625f || out[4] != -0.25f || out[3] != hdrIn[3] || out[7] != hdrIn[7])
+      return Fail("neural==proxy restores original HDR range and alpha");
+    if (out[2] <= 1.f) return Fail("reconstruct must not globally clamp HDR headroom");
+
+    const float sdr[] = {0.1f, 0.2f, 0.3f, 0.4f};
+    const float neu[] = {0.9f, 0.8f, 0.7f, 1.0f};
+    float sdrProxy[4]{}, recon[4]{}, blended[4]{};
+    PrepareModelRgba32f(sdr, sdrProxy, 1);
+    ReconstructRgba32f(sdr, sdrProxy, neu, recon, 1, 0.5f, 1.0f);
+    CompositeRgba32f(sdr, neu, blended, 1, 0.5f, 1.0f, false);
+    for (int c = 0; c < 4; ++c)
+      if (std::fabs(recon[c] - blended[c]) > 1.0e-6f)
+        return Fail("SDR [0,1] reconstruct must match the old non-hdr composite");
+
+    uint8_t a[8], b[8];
+    std::memcpy(a, hdrIn, 8);
+    std::memcpy(b, hdrIn, 8);
+    if (NrHashBytes(a, 8) != NrHashBytes(b, 8))
+      return Fail("content hash must not use buffer address");
+    b[0] ^= 1;
+    if (NrHashBytes(a, 8) == NrHashBytes(b, 8))
+      return Fail("content hash must change when pixels change");
+
+    std::vector<float> imgA(16, 0.25f), imgB(16, 0.75f), prev(16, 0.1f), mvec(8, 1.f), depth(4, 0.5f);
+    std::vector<float> outA(16, 0.f);
+    nr_eval_desc da{};
+    da.width = 2; da.height = 2; da.format = NR_PIX_RGBA32F; da.instance_id = 1; da.frame_id = 10;
+    da.detail = 1.f; da.color = 1.f; da.in_rgba = imgA.data(); da.out_rgba = outA.data();
+    da.in_prev_rgba = prev.data(); da.in_mvec = mvec.data(); da.in_depth = depth.data();
+    NrEvalIdentity ia = NrIdentityFromDesc(da);
+    da.in_rgba = imgB.data();
+    NrEvalIdentity ib = NrIdentityFromDesc(da);
+    if (NrIdentityEqual(ia, ib)) return Fail("different inputs must not share eval identity");
+    da.in_rgba = imgA.data();
+    da.instance_id = 2;
+    if (NrIdentityEqual(ia, NrIdentityFromDesc(da)))
+      return Fail("different instances must not share eval identity");
+    da.instance_id = 1;
+    da.maps_only = 1;
+    if (NrIdentityEqual(ia, NrIdentityFromDesc(da)))
+      return Fail("maps-only must not match final-image identity");
+    da.maps_only = 0;
+    da.in_mvec = nullptr;
+    if (NrIdentityEqual(ia, NrIdentityFromDesc(da)))
+      return Fail("dropping external mvec must invalidate identity");
+  }
+
   const bool runGpu = GetEnvironmentVariableW(L"DLSSNR2FX_RUN_GPU", nullptr, 0) > 0;
   if (runGpu) {
     std::wstring runtime = FullPath(L"runtime");
@@ -241,7 +314,57 @@ int main() {
     status = eval(&d);
     if (status != NR_OK) return Fail("optional GPU eval after shutdown");
     shutdown();
-    std::puts("GPU/NGX round trip + restart: PASS");
+
+    const size_t px = static_cast<size_t>(gpuWidth) * gpuHeight;
+    std::vector<float> inF(px * 4), outHdr(px * 4, 0.f), outHdr2(px * 4, 0.f);
+    for (size_t i = 0; i < px; ++i) {
+      inF[i * 4 + 0] = (i % 4 == 0) ? 182.625f : 0.25f;
+      inF[i * 4 + 1] = (i % 4 == 1) ? 1.0f : 0.25f;
+      inF[i * 4 + 2] = (i % 4 == 2) ? 0.0f : 0.25f;
+      inF[i * 4 + 3] = 0.8f;
+    }
+    inF[0] = -0.25f;
+    nr_eval_desc hf{};
+    hf.width = gpuWidth; hf.height = gpuHeight; hf.adapter = -1;
+    hf.instance_id = 300; hf.request_id = 1; hf.timeout_ms = 120000;
+    hf.model.preset = 0; hf.model.style = 0; hf.model.intensity = 1.0f;
+    hf.model.local_structure = 1.0f; hf.model.local_tone = 1.0f;
+    hf.model.skin = -1.0f; hf.model.global_tone = -1.0f;
+    hf.detail = 0.0f; hf.color = 1.0f;
+    hf.runtime_dir = runtime.c_str();
+    hf.format = NR_PIX_RGBA32F;
+    hf.frame_id = 7; hf.frame_step = 1; hf.fg_coalesce = 1;
+    hf.in_rgba = inF.data(); hf.out_rgba = outHdr.data();
+    status = eval(&hf);
+    if (status != NR_OK) return Fail("optional GPU HDR detail=0 eval");
+    if (std::memcmp(inF.data(), outHdr.data(), inF.size() * sizeof(float)) != 0)
+      return Fail("GPU HDR detail=0 must be bit-exact original");
+    hf.detail = 1.0f; hf.request_id = 2;
+    std::fill(outHdr.begin(), outHdr.end(), 0.f);
+    status = eval(&hf);
+    if (status != NR_OK) return Fail("optional GPU HDR detail=1 eval");
+    float maxRgb = 0.f;
+    for (size_t i = 0; i < px; ++i) {
+      maxRgb = std::max(maxRgb, outHdr[i * 4 + 0]);
+      maxRgb = std::max(maxRgb, outHdr[i * 4 + 1]);
+      maxRgb = std::max(maxRgb, outHdr[i * 4 + 2]);
+      if (outHdr[i * 4 + 3] != inF[i * 4 + 3]) return Fail("GPU HDR alpha must pass through");
+    }
+    if (maxRgb <= 1.0f) return Fail("GPU HDR output must keep values above 1");
+    std::vector<float> inF2 = inF;
+    inF2[4] = 50.0f;
+    hf.in_rgba = inF2.data(); hf.out_rgba = outHdr2.data(); hf.request_id = 3;
+    status = eval(&hf);
+    if (status != NR_OK) return Fail("optional GPU HDR second input eval");
+    if (std::memcmp(outHdr.data(), outHdr2.data(), outHdr.size() * sizeof(float)) == 0)
+      return Fail("same frame different input must not reuse cached output");
+    hf.in_rgba = inF.data(); hf.out_rgba = outHdr2.data(); hf.request_id = 4;
+    status = eval(&hf);
+    if (status != NR_OK) return Fail("optional GPU HDR coalesce re-request");
+    if (std::memcmp(outHdr.data(), outHdr2.data(), outHdr.size() * sizeof(float)) != 0)
+      return Fail("identical HDR request should match previous result");
+    shutdown();
+    std::puts("GPU/NGX round trip + restart + HDR: PASS");
   } else {
     std::puts("GPU/NGX round trip: SKIP (set DLSSNR2FX_RUN_GPU=1 on the hard-redline machine)");
   }

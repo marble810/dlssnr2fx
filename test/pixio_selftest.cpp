@@ -95,6 +95,23 @@ void TestAex16BitPassthroughIsExact() {
   assert(pix::PackAsFloat(srcWorld));
 }
 
+void TestHighlightProtectionUsesOriginalHdrPeak() {
+  float source[] = {182.625f, 0.25f, 0.125f, 1.f};
+  float result[] = {0.5f, 0.5f, 0.5f, 1.f};
+  pix::PixWorld srcWorld{};
+  srcWorld.data = reinterpret_cast<uint8_t*>(source);
+  srcWorld.rowBytes = 16;
+  srcWorld.bounds = {0, 0, 1, 1};
+  srcWorld.width = 1;
+  srcWorld.height = 1;
+  srcWorld.nComp = 4;
+  srcWorld.bytesPerComp = 4;
+  pix::PixWorld dstWorld = srcWorld;
+  dstWorld.data = reinterpret_cast<uint8_t*>(result);
+  pix::RestoreHighlights(srcWorld, dstWorld, 0.80f, 0.0f, 1.0f, false);
+  assert(result[0] == 182.625f && result[1] == 0.25f && result[2] == 0.125f && result[3] == 1.f);
+}
+
 void TestHighlightProtectionWithAexArgb() {
   // Pixel 0 is above the threshold; pixel 1 is below it.
   uint8_t source[] = {255, 240, 220, 200, 255, 80, 70, 60};
@@ -143,6 +160,7 @@ int main() {
   TestAex16BitRange();
   TestAex16BitPassthroughIsExact();
   TestHighlightProtectionWithAexArgb();
+  TestHighlightProtectionUsesOriginalHdrPeak();
   TestPackMvecAndDepth();
   std::puts("pixio_selftest: PASS");
   return 0;

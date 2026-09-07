@@ -24,6 +24,7 @@ void Rgba8ToBgra(const uint8_t* rgba, uint8_t* bgra, size_t pixels) {
 void Rgba32fToBgra(const float* rgba, uint8_t* bgra, size_t pixels) {
   for (size_t i = 0; i < pixels; ++i) {
     auto q = [](float v) {
+      if (!std::isfinite(v)) v = 0.f;
       v = std::max(0.f, std::min(1.f, v));
       return static_cast<uint8_t>(v * 255.f + 0.5f);
     };

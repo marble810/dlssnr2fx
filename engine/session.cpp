@@ -1,7 +1,9 @@
 #include "dlssnr2fx.h"
 
+#include "color_adapt.h"
 #include "composite.h"
 #include "dav2.h"
+#include "eval_identity.h"
 #include "frame_guidance.h"
 #include "gpu.h"
 #include "mvec.h"
@@ -145,10 +147,14 @@ public:
     FrameGuidanceMode fgMode = FrameGuidanceMode::Auto;
     if (desc.fg_mode == NR_FG_ALWAYS_RESET) fgMode = FrameGuidanceMode::AlwaysReset;
     else if (desc.fg_mode == NR_FG_LOCK) fgMode = FrameGuidanceMode::Lock;
+    if (inst.lastEval.have && inst.lastEval.id.instance_id != desc.instance_id) {
+      dav2_.Reset();
+      nvof_.Reset();
+    }
     const FrameGuidanceAction fg = DecideFrameGuidance(
-        inst.lastEval.have, desc.instance_id, inst.lastEval.frame_id, desc.instance_id,
-        desc.frame_id, desc.frame_step, desc.reset != 0, LastMatches(inst.lastEval, desc, bytes),
-        fgMode, desc.fg_coalesce != 0);
+        inst.lastEval.have, inst.lastEval.id.instance_id, inst.lastEval.id.frame_id,
+        desc.instance_id, desc.frame_id, desc.frame_step, desc.reset != 0,
+        LastMatches(inst.lastEval, desc, bytes), fgMode, desc.fg_coalesce != 0);
     auto emitGuide = [&](const float* mv, const float* z) {
       if (desc.out_mvec) {
         if (mv) std::memcpy(desc.out_mvec, mv, pixels * 2 * sizeof(float));
@@ -159,7 +165,7 @@ public:
         else std::memset(desc.out_depth, 0, pixels * sizeof(float));
       }
     };
-    if (fg == FrameGuidanceAction::Coalesce) {
+    if (fg == FrameGuidanceAction::Coalesce && !desc.maps_only) {
       if (desc.out_rgba && !inst.lastEval.output.empty())
         std::memcpy(desc.out_rgba, inst.lastEval.output.data(), bytes);
       emitGuide(inst.lastEval.mvec.size() == pixels * 2 ? inst.lastEval.mvec.data() : nullptr,
@@ -171,7 +177,20 @@ public:
     }
     // Natron evaluates out of order. Feature 18 history is last GPU Evaluate, not T-1.
     const bool hasPrev = desc.in_prev_rgba != nullptr;
-    const bool ngxReset = desc.fg_mode != NR_FG_LOCK;
+    const bool ngxReset = fg == FrameGuidanceAction::Reset || inst.firstFrame;
+    std::vector<float> proxy, prevProxy;
+    const void* colorNow = desc.in_rgba;
+    const void* colorPrev = desc.in_prev_rgba;
+    if (deep) {
+      proxy.resize(pixels * 4);
+      PrepareModelRgba32f(static_cast<const float*>(desc.in_rgba), proxy.data(), pixels);
+      colorNow = proxy.data();
+      if (desc.in_prev_rgba) {
+        prevProxy.resize(pixels * 4);
+        PrepareModelRgba32f(static_cast<const float*>(desc.in_prev_rgba), prevProxy.data(), pixels);
+        colorPrev = prevProxy.data();
+      }
+    }
     std::vector<float> mvec;
     std::vector<float> depth;
     const float* mvecPtr = nullptr;
@@ -180,20 +199,20 @@ public:
       mvecPtr = desc.in_mvec;
     } else if (desc.mvec_source == NR_GUIDE_ESTIMATE && hasPrev && !ngxReset) {
       const bool nvofOk = deep
-          ? nvof_.EstimateRgba32f(gpu_.AdapterLuid(), static_cast<const float*>(desc.in_rgba),
-                                 static_cast<const float*>(desc.in_prev_rgba), desc.width,
+          ? nvof_.EstimateRgba32f(gpu_.AdapterLuid(), static_cast<const float*>(colorNow),
+                                 static_cast<const float*>(colorPrev), desc.width,
                                  desc.height, desc.nvof_quality, desc.nvof_hint != 0, mvec)
-          : nvof_.EstimateRgba8(gpu_.AdapterLuid(), static_cast<const uint8_t*>(desc.in_rgba),
-                                static_cast<const uint8_t*>(desc.in_prev_rgba), desc.width,
+          : nvof_.EstimateRgba8(gpu_.AdapterLuid(), static_cast<const uint8_t*>(colorNow),
+                                static_cast<const uint8_t*>(colorPrev), desc.width,
                                 desc.height, desc.nvof_quality, desc.nvof_hint != 0, mvec);
       if (!nvofOk) {
         if (deep)
-          EstimateMvecRgba32f(static_cast<const float*>(desc.in_rgba),
-                              static_cast<const float*>(desc.in_prev_rgba), desc.width, desc.height,
+          EstimateMvecRgba32f(static_cast<const float*>(colorNow),
+                              static_cast<const float*>(colorPrev), desc.width, desc.height,
                               mvec);
         else
-          EstimateMvecRgba8(static_cast<const uint8_t*>(desc.in_rgba),
-                            static_cast<const uint8_t*>(desc.in_prev_rgba), desc.width, desc.height,
+          EstimateMvecRgba8(static_cast<const uint8_t*>(colorNow),
+                            static_cast<const uint8_t*>(colorPrev), desc.width, desc.height,
                             mvec);
       }
       if (mvec.size() == pixels * 2) mvecPtr = mvec.data();
@@ -204,9 +223,9 @@ public:
       const int interval = desc.dav2_interval > 0 ? desc.dav2_interval : 4;
       const float ema = desc.dav2_ema >= 0.f ? desc.dav2_ema : 0.7f;
       const bool dav2Ok = deep
-          ? dav2_.EstimateRgba32f(desc.runtime_dir, static_cast<const float*>(desc.in_rgba),
+          ? dav2_.EstimateRgba32f(desc.runtime_dir, static_cast<const float*>(colorNow),
                                  desc.width, desc.height, interval, ema, desc.frame_id, depth)
-          : dav2_.EstimateRgba8(desc.runtime_dir, static_cast<const uint8_t*>(desc.in_rgba),
+          : dav2_.EstimateRgba8(desc.runtime_dir, static_cast<const uint8_t*>(colorNow),
                                 desc.width, desc.height, interval, ema, desc.frame_id, depth);
       if (dav2Ok && depth.size() == pixels) depthPtr = depth.data();
     }
@@ -229,9 +248,9 @@ public:
     uint32_t uploadTimeout = RemainingMs(deadline);
     if (!uploadTimeout) { state_ = State::Ready; return NR_ERR_TIMEOUT; }
     const bool uploaded = deep
-        ? gpu_.UploadInputs(static_cast<const float*>(desc.in_rgba), bytes, mvecPtr, mvecBytes,
+        ? gpu_.UploadInputs(static_cast<const float*>(colorNow), bytes, mvecPtr, mvecBytes,
                             depthPtr, depthBytes, uploadTimeout)
-        : gpu_.UploadInputs(static_cast<const uint8_t*>(desc.in_rgba), bytes, mvecPtr, mvecBytes,
+        : gpu_.UploadInputs(static_cast<const uint8_t*>(colorNow), bytes, mvecPtr, mvecBytes,
                             depthPtr, depthBytes, uploadTimeout);
     if (!uploaded)
       return Fail(RemainingMs(deadline) ? NR_ERR_GPU : NR_ERR_TIMEOUT, "input upload failed");
@@ -259,9 +278,8 @@ public:
             desc.instance_id, desc.request_id);
         return NR_ERR_SUPERSEDED;
       }
-      CompositeRgba32f(static_cast<const float*>(desc.in_rgba), neural.data(),
-                       static_cast<float*>(desc.out_rgba), pixels,
-                       desc.detail, desc.color, desc.hdr != 0);
+      ReconstructRgba32f(static_cast<const float*>(desc.in_rgba), proxy.data(), neural.data(),
+                         static_cast<float*>(desc.out_rgba), pixels, desc.detail, desc.color);
     } else {
       std::vector<uint8_t> neural;
       if (!gpu_.ReadOutput(neural, remain)) return Fail(NR_ERR_TIMEOUT, "output readback failed");
@@ -305,21 +323,7 @@ public:
 private:
   struct LastEval {
     bool have = false;
-    uint32_t instance_id = 0;
-    int64_t frame_id = 0;
-    int width = 0;
-    int height = 0;
-    nr_pixel_format format = NR_PIX_RGBA8;
-    nr_model model{};
-    float detail = 0.f;
-    float color = 0.f;
-    int32_t hdr = 0;
-    int32_t mvec_source = 0;
-    int32_t depth_source = 0;
-    int32_t nvof_quality = 0;
-    int32_t nvof_hint = 0;
-    int32_t dav2_interval = 0;
-    float dav2_ema = 0.f;
+    NrEvalIdentity id{};
     std::vector<uint8_t> output;
     std::vector<float> mvec;
     std::vector<float> depth;
@@ -352,32 +356,12 @@ private:
     state_ = State::Idle;
   }
   bool LastMatches(const LastEval& last, const nr_eval_desc& desc, size_t bytes) const {
-    return last.have && last.frame_id == desc.frame_id && last.width == desc.width &&
-           last.height == desc.height && last.format == desc.format && last.detail == desc.detail &&
-           last.color == desc.color && last.hdr == desc.hdr && NrModelEqual(last.model, desc.model) &&
-           last.mvec_source == static_cast<int32_t>(desc.mvec_source) &&
-           last.depth_source == static_cast<int32_t>(desc.depth_source) &&
-           last.nvof_quality == static_cast<int32_t>(desc.nvof_quality) &&
-           last.nvof_hint == desc.nvof_hint && last.dav2_interval == desc.dav2_interval &&
-           last.dav2_ema == desc.dav2_ema && last.output.size() == bytes;
+    return last.have && last.output.size() == bytes &&
+           NrIdentityEqual(last.id, NrIdentityFromDesc(desc));
   }
   void RememberEval(LastEval& last, const nr_eval_desc& desc, size_t bytes) {
     last.have = true;
-    last.instance_id = desc.instance_id;
-    last.frame_id = desc.frame_id;
-    last.width = desc.width;
-    last.height = desc.height;
-    last.format = desc.format;
-    last.model = desc.model;
-    last.detail = desc.detail;
-    last.color = desc.color;
-    last.hdr = desc.hdr;
-    last.mvec_source = static_cast<int32_t>(desc.mvec_source);
-    last.depth_source = static_cast<int32_t>(desc.depth_source);
-    last.nvof_quality = static_cast<int32_t>(desc.nvof_quality);
-    last.nvof_hint = desc.nvof_hint;
-    last.dav2_interval = desc.dav2_interval;
-    last.dav2_ema = desc.dav2_ema;
+    last.id = NrIdentityFromDesc(desc);
     last.output.resize(bytes);
     if (desc.out_rgba) std::memcpy(last.output.data(), desc.out_rgba, bytes);
     const size_t px = static_cast<size_t>(desc.width) * desc.height;
