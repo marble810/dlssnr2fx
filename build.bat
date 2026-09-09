@@ -35,6 +35,8 @@ echo   forwarder  build dist\engine\nvngx.dll_dlssnr.dll and copy into runtime\
 echo   plugin     build OFX bundle and copy the engine beside the plug-in
 echo   aex        build After Effects plug-in and copy the engine into dist\aex
 echo   selftest   build/run the in-process engine and pixel conversion tests
+echo.
+echo Pack a versioned zip with release.bat (includes fetch-runtime.bat).
 exit /b 0
 
 :engine

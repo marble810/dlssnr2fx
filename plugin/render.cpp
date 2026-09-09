@@ -7,6 +7,7 @@
 
 #include "srw.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <string>
@@ -44,7 +45,60 @@ bool FillImage(OfxPropertySetHandle props, ImageInfo& img) {
   img.depth = depth ? depth : kOfxBitDepthByte;
   img.bytesPerComp = DepthBytes(img.depth);
   img.nComp = CompCount(comps);
-  return img.data && img.width > 0 && img.height > 0;
+  return pix::FitWorldToRowBytes(img);
+}
+
+size_t CommittedBytes(const uint8_t* p) {
+  MEMORY_BASIC_INFORMATION mbi{};
+  if (!p || !VirtualQuery(p, &mbi, sizeof(mbi)) || mbi.State != MEM_COMMIT) return 0;
+  const auto* base = static_cast<const uint8_t*>(mbi.BaseAddress);
+  const auto* regionEnd = base + mbi.RegionSize;
+  if (p < base || p >= regionEnd) return 0;
+  return static_cast<size_t>(regionEnd - p);
+}
+
+void ClampToCommitted(pix::PixWorld& img) {
+  const size_t avail = CommittedBytes(img.data);
+  if (!avail) return;
+  pix::FitWorldToBytes(img, avail);
+}
+
+bool FinalizeImage(ImageInfo& img, const OfxRectI& win) {
+  if (!pix::FitWorldToRowBytes(img)) return false;
+  if (win.x2 > win.x1 && win.y2 > win.y1) {
+    if (!pix::CropWorld(img, {win.x1, win.y1, win.x2, win.y2})) return false;
+  }
+  ClampToCommitted(img);
+  return pix::WorldUsable(img);
+}
+
+int SehInvoke(void (*fn)(void*), void* ctx) {
+  __try {
+    fn(ctx);
+    return 1;
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return 0;
+  }
+}
+
+struct PackCtx {
+  ImageInfo* src;
+  std::vector<uint8_t>* packed8;
+  std::vector<float>* packedF;
+  bool deep;
+};
+void PackFn(void* p) {
+  auto* c = static_cast<PackCtx*>(p);
+  if (c->deep) pix::PackRgba32f(*c->src, *c->packedF, true);
+  else pix::PackRgba8(*c->src, *c->packed8, true);
+}
+struct CopyCtx {
+  ImageInfo* src;
+  ImageInfo* dst;
+};
+void CopyFn(void* p) {
+  auto* c = static_cast<CopyCtx*>(p);
+  pix::CopyPassthrough(*c->src, *c->dst);
 }
 }  // namespace
 
@@ -115,11 +169,25 @@ OfxStatus Render(OfxImageEffectHandle effect, OfxPropertySetHandle inArgs,
   st = gEffectHost->clipGetImage(data->outputClip, time, nullptr, &dstImg);
   if (st != kOfxStatOK) { gEffectHost->clipReleaseImage(srcImg); return st; }
   ImageInfo src{}, dst{};
-  if (!FillImage(srcImg, src) || !FillImage(dstImg, dst)) {
-    Logf("render: missing image data");
+  if (!FillImage(srcImg, src) || !FillImage(dstImg, dst) ||
+      !FinalizeImage(src, renderWin) || !FinalizeImage(dst, renderWin)) {
+    Logf("render: missing image data scale=%.3f,%.3f win=(%d,%d)-(%d,%d)",
+         scale[0], scale[1], renderWin.x1, renderWin.y1, renderWin.x2, renderWin.y2);
     gEffectHost->clipReleaseImage(srcImg); gEffectHost->clipReleaseImage(dstImg);
     return kOfxStatFailed;
   }
+  const int packedRow = src.width * src.nComp * src.bytesPerComp;
+  if (src.width == dst.width && packedRow > 0 &&
+      std::abs(dst.rowBytes) == packedRow &&
+      std::abs(src.rowBytes) == 2 * packedRow) {
+    Logf("render: src stride %d looks like full-res padding on %dx%d; using %d",
+         src.rowBytes, src.width, src.height, dst.rowBytes);
+    src.rowBytes = src.rowBytes < 0 ? -packedRow : packedRow;
+  }
+  Logf("render: begin src=%dx%d dst=%dx%d srcRow=%d dstRow=%d bpc=%d nComp=%d scale=%.3f,%.3f win=(%d,%d)-(%d,%d)",
+       src.width, src.height, dst.width, dst.height, src.rowBytes, dst.rowBytes,
+       src.bytesPerComp, src.nComp, scale[0], scale[1],
+       renderWin.x1, renderWin.y1, renderWin.x2, renderWin.y2);
   const bool deepSrc = pix::PackAsFloat(src);
   const int64_t frameId = static_cast<int64_t>(std::llround(time));
   auto release = [&]() {
@@ -127,7 +195,12 @@ OfxStatus Render(OfxImageEffectHandle effect, OfxPropertySetHandle inArgs,
     gEffectHost->clipReleaseImage(dstImg);
   };
   auto finishCopy = [&]() {
-    pix::CopyPassthrough(src, dst);
+    CopyCtx ctx{&src, &dst};
+    if (!SehInvoke(CopyFn, &ctx)) {
+      Logf("render: fault copying %dx%d", src.width, src.height);
+      release();
+      return kOfxStatFailed;
+    }
     release();
     return kOfxStatOK;
   };
@@ -152,7 +225,12 @@ OfxStatus Render(OfxImageEffectHandle effect, OfxPropertySetHandle inArgs,
     int protect = 1;
     double thr = 0.80, soft = 0.15, mix = 1.0;
     highlightParams(thr, soft, mix, protect);
-    pix::CopyPassthrough(src, dst);
+    CopyCtx ctx{&src, &dst};
+    if (!SehInvoke(CopyFn, &ctx)) {
+      Logf("render: fault copying highlight %dx%d", src.width, src.height);
+      release();
+      return kOfxStatFailed;
+    }
     pix::RestoreHighlights(src, dst, static_cast<float>(thr), static_cast<float>(soft),
                            static_cast<float>(mix), true);
     release();
@@ -165,6 +243,15 @@ OfxStatus Render(OfxImageEffectHandle effect, OfxPropertySetHandle inArgs,
   }
   if (scale[0] < 0.4 || scale[1] < 0.4) {
     Logf("render: skip mipmap %dx%d scale=%.3f,%.3f", src.width, src.height, scale[0], scale[1]);
+    return finishCopy();
+  }
+  if (src.width < 16 || src.height < 16) {
+    Logf("render: skip tiny %dx%d", src.width, src.height);
+    return finishCopy();
+  }
+  if (src.width != dst.width || src.height != dst.height) {
+    Logf("render: skip size mismatch src=%dx%d dst=%dx%d", src.width, src.height,
+         dst.width, dst.height);
     return finishCopy();
   }
   if (aborted()) {
@@ -184,13 +271,14 @@ OfxStatus Render(OfxImageEffectHandle effect, OfxPropertySetHandle inArgs,
   std::vector<uint8_t> packed8, out8;
   std::vector<float> packedF, outF;
   const bool deep = deepSrc;
-  if (deep) {
-    pix::PackRgba32f(src, packedF, true);
-    outF.resize(packedF.size());
-  } else {
-    pix::PackRgba8(src, packed8, true);
-    out8.resize(packed8.size());
+  PackCtx packCtx{&src, &packed8, &packedF, deep};
+  if (!SehInvoke(PackFn, &packCtx)) {
+    Logf("render: fault packing source %dx%d rowBytes=%d", src.width, src.height, src.rowBytes);
+    release();
+    return kOfxStatFailed;
   }
+  if (deep) outF.resize(packedF.size());
+  else out8.resize(packed8.size());
   nr_eval_desc desc{};
   desc.width = src.width; desc.height = src.height; desc.adapter = -1;
   desc.instance_id = data->instanceId; desc.request_id = request;
@@ -207,7 +295,8 @@ OfxStatus Render(OfxImageEffectHandle effect, OfxPropertySetHandle inArgs,
   OfxPropertySetHandle prevImg = nullptr;
   if (gEffectHost->clipGetImage(data->sourceClip, time - 1.0, nullptr, &prevImg) == kOfxStatOK) {
     ImageInfo prev{};
-    if (FillImage(prevImg, prev) && prev.width == src.width && prev.height == src.height &&
+    if (FillImage(prevImg, prev) && FinalizeImage(prev, renderWin) &&
+        prev.width == src.width && prev.height == src.height &&
         prev.bytesPerComp == src.bytesPerComp) {
       if (deep) {
         pix::PackRgba32f(prev, prevF, true);
@@ -224,7 +313,8 @@ OfxStatus Render(OfxImageEffectHandle effect, OfxPropertySetHandle inArgs,
     OfxPropertySetHandle mvecImg = nullptr;
     if (gEffectHost->clipGetImage(data->mvecClip, time, nullptr, &mvecImg) == kOfxStatOK) {
       ImageInfo mv{};
-      if (FillImage(mvecImg, mv) && mv.width == src.width && mv.height == src.height) {
+      if (FillImage(mvecImg, mv) && FinalizeImage(mv, renderWin) &&
+          mv.width == src.width && mv.height == src.height) {
         int dir = 0, unit = 0, enc = 0;
         double range = 64.0;
         if (data->mvecDirParam) gParamHost->paramGetValue(data->mvecDirParam, &dir);
@@ -241,7 +331,8 @@ OfxStatus Render(OfxImageEffectHandle effect, OfxPropertySetHandle inArgs,
     OfxPropertySetHandle depthImg = nullptr;
     if (gEffectHost->clipGetImage(data->depthClip, time, nullptr, &depthImg) == kOfxStatOK) {
       ImageInfo dz{};
-      if (FillImage(depthImg, dz) && dz.width == src.width && dz.height == src.height) {
+      if (FillImage(depthImg, dz) && FinalizeImage(dz, renderWin) &&
+          dz.width == src.width && dz.height == src.height) {
         int conv = 0;
         if (data->depthConvParam) gParamHost->paramGetValue(data->depthConvParam, &conv);
         pix::PackDepth(dz, guideDepth, true, conv != 0);
@@ -270,10 +361,12 @@ OfxStatus Render(OfxImageEffectHandle effect, OfxPropertySetHandle inArgs,
     return kOfxStatFailed;
   }
   if (view == kViewDepth) {
-    pix::VizDepth(dst, usedDepth.data(), true);
+    pix::VizDepth(dst, usedDepth.data(), true, pixels);
   } else if (view == kViewMvec) {
-    pix::VizMvec(dst, usedMvec.data(), true);
+    pix::VizMvec(dst, usedMvec.data(), true, pixels);
   } else {
+    CopyCtx copyCtx{&src, &dst};
+    SehInvoke(CopyFn, &copyCtx);
     if (deep) pix::UnpackRgba32f(dst, outF, true);
     else pix::UnpackRgba8(dst, out8, true);
     int protect = 0;

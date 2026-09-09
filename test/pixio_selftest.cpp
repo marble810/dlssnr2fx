@@ -3,6 +3,7 @@
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <vector>
 
 namespace {
@@ -150,8 +151,101 @@ void TestPackMvecAndDepth() {
   uint8_t dst[4] = {0, 0, 0, 0};
   auto out = AexWorld(dst, 1, 1, 4);
   float depthv[] = {0.25f};
-  pix::VizDepth(out, depthv, false);
+  pix::VizDepth(out, depthv, false, 1);
   assert(dst[1] > 50 && dst[1] < 80);  // R ~= 0.25*255 in AE ARGB
+}
+
+void TestFitWorldToRowBytesClampsWidth() {
+  uint8_t buf[16] = {};
+  pix::PixWorld world{};
+  world.data = buf;
+  world.rowBytes = 16;
+  world.bounds = {0, 0, 100, 1};
+  world.width = 100;
+  world.height = 1;
+  world.nComp = 4;
+  world.bytesPerComp = 1;
+  assert(!pix::WorldUsable(world));
+  assert(pix::FitWorldToRowBytes(world));
+  assert(world.width == 4);
+  assert(world.bounds.x2 == 4);
+  assert(pix::WorldUsable(world));
+  std::vector<uint8_t> rgba;
+  pix::PackRgba8(world, rgba, false);
+  assert(rgba.size() == 16);
+}
+
+void TestUnpackDoesNotReadPastPackedBuffer() {
+  uint8_t dst[32] = {};
+  auto world = AexWorld(dst, 2, 2, 8);
+  const std::vector<uint8_t> onePixel = {10, 20, 30, 40};
+  pix::UnpackRgba8(world, onePixel, false);
+  assert(dst[1] == 10 && dst[2] == 20 && dst[3] == 30 && dst[0] == 40);
+}
+
+void TestCropWorldSlidesOrigin() {
+  uint8_t buf[8] = {255, 1, 2, 3, 255, 9, 8, 7};
+  auto world = AexWorld(buf, 2, 1, 8);
+  assert(pix::CropWorld(world, {1, 0, 2, 1}));
+  assert(world.width == 1 && world.height == 1);
+  std::vector<uint8_t> rgba;
+  pix::PackRgba8(world, rgba, false);
+  assert((rgba == std::vector<uint8_t>{9, 8, 7, 255}));
+}
+
+void TestFitWorldToBytesRepairsProxyStrideLie() {
+  // Houdini Copernicus proxy 1:2: 960x540 float RGBA packed tightly, but
+  // kOfxImagePropRowBytes still reports the full-res 1920-wide stride.
+  const int w = 960, h = 540, bpc = 4, nComp = 4;
+  const int packed = w * nComp * bpc;
+  const int lied = packed * 2;
+  std::vector<uint8_t> buf(static_cast<size_t>(h) * packed, 0);
+  float marker = 0.5f;
+  std::memcpy(buf.data() + packed, &marker, 4);
+  pix::PixWorld world{};
+  world.data = buf.data();
+  world.rowBytes = lied;
+  world.bounds = {0, 0, w, h};
+  world.width = w;
+  world.height = h;
+  world.nComp = nComp;
+  world.bytesPerComp = bpc;
+  assert(pix::FitWorldToBytes(world, buf.size()));
+  assert(world.rowBytes == packed);
+  assert(world.width == w && world.height == h);
+  assert(pix::SampleNorm(world, 0, 1, 0) == 0.5f);
+}
+
+void TestHighlightOnPartialUnpackLooksLikeMask() {
+  // Documents the proxy artifact: unpack only fills the top (flipped) half,
+  // RestoreHighlights then paints src highlights onto the unwritten black bottom.
+  float srcPix[4] = {2.f, 2.f, 2.f, 1.f};
+  float dstPix[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+  pix::PixWorld src{};
+  src.data = reinterpret_cast<uint8_t*>(srcPix);
+  src.rowBytes = 16;
+  src.bounds = {0, 0, 1, 1};
+  src.width = 1;
+  src.height = 1;
+  src.nComp = 4;
+  src.bytesPerComp = 4;
+  pix::PixWorld dst = src;
+  dst.data = reinterpret_cast<uint8_t*>(dstPix);
+  dst.bounds = {0, 0, 1, 2};
+  dst.height = 2;
+  const std::vector<float> packed = {0.2f, 0.2f, 0.2f, 1.f};
+  pix::UnpackRgba32f(dst, packed, true);
+  pix::RestoreHighlights(src, dst, 0.80f, 0.0f, 1.0f, false);
+  assert(dstPix[4] == 0.2f);
+  assert(dstPix[0] == 2.f);
+}
+
+void TestVizDepthStopsAtPixelCount() {
+  uint8_t dst[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+  auto world = AexWorld(dst, 2, 1, 8);
+  float z[] = {1.f};
+  pix::VizDepth(world, z, false, 1);
+  assert(dst[1] == 255);
 }
 
 int main() {
@@ -162,6 +256,12 @@ int main() {
   TestHighlightProtectionWithAexArgb();
   TestHighlightProtectionUsesOriginalHdrPeak();
   TestPackMvecAndDepth();
+  TestFitWorldToRowBytesClampsWidth();
+  TestUnpackDoesNotReadPastPackedBuffer();
+  TestCropWorldSlidesOrigin();
+  TestVizDepthStopsAtPixelCount();
+  TestFitWorldToBytesRepairsProxyStrideLie();
+  TestHighlightOnPartialUnpackLooksLikeMask();
   std::puts("pixio_selftest: PASS");
   return 0;
 }

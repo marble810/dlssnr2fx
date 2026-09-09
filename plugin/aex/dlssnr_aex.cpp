@@ -476,9 +476,9 @@ PF_Err Render(PF_InData* in_data, PF_OutData* out_data, PF_ParamDef* params[], P
   }
   if (status == NR_OK) {
     if (view == 2) {
-      pix::VizDepth(dst, usedDepth.data(), false);
+      pix::VizDepth(dst, usedDepth.data(), false, pixels);
     } else if (view == 3) {
-      pix::VizMvec(dst, usedMvec.data(), false);
+      pix::VizMvec(dst, usedMvec.data(), false, pixels);
     } else {
       if (deep) pix::UnpackRgba32f(dst, outF, /*flipVert=*/false);
       else pix::UnpackRgba8(dst, out8, /*flipVert=*/false);

@@ -169,6 +169,7 @@ echo runtime ready  [!NR_LABEL!]
 dir /b runtime\nvngx_dlssnr.dll
 call :fetch_dav2
 if errorlevel 1 echo WARNING: DAV2 fetch failed; Depth Estimate will stay Off until runtime\dav2_vits.onnx and onnxruntime.dll are present
+call :sync_plugin_runtimes
 exit /b 0
 
 :cancelled
@@ -177,7 +178,9 @@ exit /b 2
 
 :dav2_only
 call :fetch_dav2
-exit /b %ERRORLEVEL%
+set "DAV2_ERR=!ERRORLEVEL!"
+call :sync_plugin_runtimes
+exit /b !DAV2_ERR!
 
 :fetch_dav2
 set "DAV2_ONNX=runtime\dav2_vits.onnx"
@@ -244,6 +247,22 @@ if not exist runtime\onnxruntime.dll (
 dir /b runtime\dav2_vits.onnx runtime\onnxruntime.dll
 exit /b 0
 
+:sync_plugin_runtimes
+if exist "ofx\dlssnr.ofx.bundle\Contents\Win64\dlssnr.ofx" call :sync_one "ofx\dlssnr.ofx.bundle\Contents\Win64\runtime"
+if exist "aex\dlssnr.aex" call :sync_one "aex\runtime"
+exit /b 0
+
+:sync_one
+mkdir "%~1" 2>nul
+if exist runtime\nvngx_dlssnr.dll copy /Y runtime\nvngx_dlssnr.dll "%~1\" >nul
+if exist runtime\nvngx.dll_dlssnr.dll copy /Y runtime\nvngx.dll_dlssnr.dll "%~1\" >nul
+if exist runtime\dav2_vits.onnx copy /Y runtime\dav2_vits.onnx "%~1\" >nul
+if exist runtime\onnxruntime.dll copy /Y runtime\onnxruntime.dll "%~1\" >nul
+if exist runtime\onnxruntime_providers_shared.dll copy /Y runtime\onnxruntime_providers_shared.dll "%~1\" >nul
+if exist runtime\nr-family.txt copy /Y runtime\nr-family.txt "%~1\" >nul
+echo synced runtime -^> %~1
+exit /b 0
+
 :usage
 echo Usage: fetch-runtime.bat [50^|40^|30^|dav2] [--force]
 echo.
@@ -257,4 +276,6 @@ echo.
 echo NR zips are cached per family (runtime\nr-rtx40.zip etc.).
 echo DAV2: huggingface.co/onnx-community/depth-anything-v2-small  model_fp16.onnx
 echo ORT : github.com/microsoft/onnxruntime  onnxruntime-win-x64-1.29.0
+echo.
+echo In a release zip, also copies runtime files into ofx\...\runtime and aex\runtime.
 exit /b 0

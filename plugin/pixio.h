@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
@@ -33,6 +34,22 @@ struct PixWorld {
 };
 
 inline bool PackAsFloat(const PixWorld& img) { return img.bytesPerComp > 1; }
+
+// True when the world has a non-empty rectangle and a stride that can hold a row.
+bool WorldUsable(const PixWorld& img);
+
+// If rowBytes is narrower than width*nComp*bytesPerComp, shrink width to fit.
+// Returns false when even one pixel cannot fit.
+bool FitWorldToRowBytes(PixWorld& img);
+
+// Crop to win ∩ bounds and slide `data` so it still points at the new origin.
+bool CropWorld(PixWorld& img, Rect win);
+
+// If `avail` bytes from `data` cannot hold height rows at the claimed stride,
+// switch to a tightly packed stride (width*nComp*bytesPerComp). If that still
+// does not fit, shrink height. Hosts such as Houdini Copernicus proxy keep the
+// full-res rowBytes on a half-res buffer.
+bool FitWorldToBytes(PixWorld& img, size_t avail);
 
 // Sample channel c at (x,y). Integer depths are normalized to 0..1.
 // Float worlds are returned unclamped. Out-of-range channel returns 1.
@@ -76,7 +93,8 @@ void PackMvec(const PixWorld& img, std::vector<float>& xy, bool flipVert, bool p
 void PackDepth(const PixWorld& img, std::vector<float>& z, bool flipVert, bool linear);
 
 // Debug views: depth as grayscale; mvec as 0.5-centered RG (32px = full) + magnitude in B.
-void VizDepth(PixWorld& dst, const float* z, bool flipVert);
-void VizMvec(PixWorld& dst, const float* xy, bool flipVert);
+// nPixels is the number of values in z / xy pairs; extra destination pixels are left untouched.
+void VizDepth(PixWorld& dst, const float* z, bool flipVert, size_t nPixels);
+void VizMvec(PixWorld& dst, const float* xy, bool flipVert, size_t nPixels);
 
 }  // namespace pix

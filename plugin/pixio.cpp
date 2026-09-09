@@ -2,9 +2,69 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
 #include <cstring>
 
 namespace pix {
+
+bool WorldUsable(const PixWorld& img) {
+  if (!img.data || img.width <= 0 || img.height <= 0) return false;
+  if (img.nComp <= 0 || img.bytesPerComp <= 0 || img.rowBytes == 0) return false;
+  const int64_t rowNeed = int64_t(img.width) * img.nComp * img.bytesPerComp;
+  return std::abs(int64_t(img.rowBytes)) >= rowNeed;
+}
+
+bool FitWorldToRowBytes(PixWorld& img) {
+  if (!img.data || img.width <= 0 || img.height <= 0) return false;
+  if (img.nComp <= 0 || img.bytesPerComp <= 0 || img.rowBytes == 0) return false;
+  const int64_t pixBytes = int64_t(img.nComp) * img.bytesPerComp;
+  const int64_t stride = std::abs(int64_t(img.rowBytes));
+  if (pixBytes <= 0 || stride < pixBytes) return false;
+  const int maxW = static_cast<int>(stride / pixBytes);
+  if (img.width > maxW) {
+    img.width = maxW;
+    img.bounds.x2 = img.bounds.x1 + maxW;
+  }
+  return img.width > 0 && img.height > 0;
+}
+
+bool CropWorld(PixWorld& img, Rect win) {
+  const int x1 = std::max(img.bounds.x1, win.x1);
+  const int y1 = std::max(img.bounds.y1, win.y1);
+  const int x2 = std::min(img.bounds.x2, win.x2);
+  const int y2 = std::min(img.bounds.y2, win.y2);
+  if (x2 <= x1 || y2 <= y1 || !img.data) return false;
+  img.data += (y1 - img.bounds.y1) * static_cast<ptrdiff_t>(img.rowBytes) +
+              (x1 - img.bounds.x1) * img.nComp * img.bytesPerComp;
+  img.bounds = {x1, y1, x2, y2};
+  img.width = x2 - x1;
+  img.height = y2 - y1;
+  return FitWorldToRowBytes(img);
+}
+
+bool FitWorldToBytes(PixWorld& img, size_t avail) {
+  if (!img.data || img.width <= 0 || img.height <= 0) return false;
+  if (img.nComp <= 0 || img.bytesPerComp <= 0) return false;
+  if (!FitWorldToRowBytes(img)) return false;
+  const int64_t rowW = int64_t(img.width) * img.nComp * img.bytesPerComp;
+  const int sign = img.rowBytes < 0 ? -1 : 1;
+  const int64_t stride = std::abs(int64_t(img.rowBytes));
+  const size_t claimed =
+      static_cast<size_t>(img.height - 1) * static_cast<size_t>(stride) + static_cast<size_t>(rowW);
+  if (avail >= claimed) return true;
+  const size_t packedSpan = static_cast<size_t>(img.height) * static_cast<size_t>(rowW);
+  if (avail >= packedSpan) {
+    img.rowBytes = static_cast<int>(sign * rowW);
+    return true;
+  }
+  const int maxH = static_cast<int>(avail / static_cast<size_t>(rowW));
+  if (maxH <= 0) return false;
+  img.rowBytes = static_cast<int>(sign * rowW);
+  img.height = maxH;
+  img.bounds.y2 = img.bounds.y1 + maxH;
+  return WorldUsable(img);
+}
 
 namespace {
 
@@ -91,11 +151,13 @@ void PackRgba8(const PixWorld& img, std::vector<uint8_t>& out, bool flipVert) {
 
 void UnpackRgba8(PixWorld& img, const std::vector<uint8_t>& in, bool flipVert) {
   size_t i = 0;
+  const size_t n = in.size();
   const int yStart = flipVert ? img.bounds.y2 - 1 : img.bounds.y1;
   const int yEnd = flipVert ? img.bounds.y1 - 1 : img.bounds.y2;
   const int yStep = flipVert ? -1 : 1;
   for (int y = yStart; y != yEnd; y += yStep) {
     for (int x = img.bounds.x1; x < img.bounds.x2; ++x) {
+      if (i + 4 > n) return;
       StoreByte(img, x, y, 0, in[i++]);
       StoreByte(img, x, y, 1, in[i++]);
       StoreByte(img, x, y, 2, in[i++]);
@@ -122,11 +184,13 @@ void PackRgba32f(const PixWorld& img, std::vector<float>& out, bool flipVert) {
 
 void UnpackRgba32f(PixWorld& img, const std::vector<float>& in, bool flipVert) {
   size_t i = 0;
+  const size_t n = in.size();
   const int yStart = flipVert ? img.bounds.y2 - 1 : img.bounds.y1;
   const int yEnd = flipVert ? img.bounds.y1 - 1 : img.bounds.y2;
   const int yStep = flipVert ? -1 : 1;
   for (int y = yStart; y != yEnd; y += yStep) {
     for (int x = img.bounds.x1; x < img.bounds.x2; ++x) {
+      if (i + 4 > n) return;
       StoreNorm(img, x, y, 0, in[i++]);
       StoreNorm(img, x, y, 1, in[i++]);
       StoreNorm(img, x, y, 2, in[i++]);
@@ -228,7 +292,7 @@ void PackDepth(const PixWorld& img, std::vector<float>& z, bool flipVert, bool l
   }
 }
 
-void VizDepth(PixWorld& dst, const float* z, bool flipVert) {
+void VizDepth(PixWorld& dst, const float* z, bool flipVert, size_t nPixels) {
   if (!z) return;
   size_t i = 0;
   const int yStart = flipVert ? dst.bounds.y2 - 1 : dst.bounds.y1;
@@ -236,6 +300,7 @@ void VizDepth(PixWorld& dst, const float* z, bool flipVert) {
   const int yStep = flipVert ? -1 : 1;
   for (int y = yStart; y != yEnd; y += yStep) {
     for (int x = dst.bounds.x1; x < dst.bounds.x2; ++x) {
+      if (i >= nPixels) return;
       float v = std::max(0.f, std::min(1.f, z[i++]));
       StoreNorm(dst, x, y, 0, v);
       StoreNorm(dst, x, y, 1, v);
@@ -245,7 +310,7 @@ void VizDepth(PixWorld& dst, const float* z, bool flipVert) {
   }
 }
 
-void VizMvec(PixWorld& dst, const float* xy, bool flipVert) {
+void VizMvec(PixWorld& dst, const float* xy, bool flipVert, size_t nPixels) {
   if (!xy) return;
   constexpr float kScale = 32.f;
   size_t i = 0;
@@ -254,6 +319,7 @@ void VizMvec(PixWorld& dst, const float* xy, bool flipVert) {
   const int yStep = flipVert ? -1 : 1;
   for (int y = yStart; y != yEnd; y += yStep) {
     for (int x = dst.bounds.x1; x < dst.bounds.x2; ++x) {
+      if (i / 2 >= nPixels) return;
       float dx = xy[i++];
       float dy = xy[i++];
       if (!std::isfinite(dx)) dx = 0.f;
