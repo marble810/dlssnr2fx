@@ -28,6 +28,10 @@ build.bat aex        :: After Effects plug-in + engine → dist\aex
 build.bat selftest   :: in-process tests (GPU test skips if no D3D12 adapter)
 ```
 
+The AEX build also runs `test\aex_params_selftest.bat` (AE SDK required, no AE process or GPU). It checks current-time parameter checkout, all Views and render controls, guide-layer conversion, and checkout cleanup.
+
+For an AE-host check after replacing the plug-in and restarting AE, run `test/aex_ui_smoke.jsx` via **File → Scripts → Run Script File**, then `python test/aex_ui_smoke.py` (Pillow required). It exports temporary fixtures and verifies Source → Highlight Mask → Source at the same frame without changing the active composition. Enable AE's script file-write permission if prompted.
+
 `fetch-runtime.bat [50|40|30|dav2] [--force]` downloads the NR snippet for this machine.
 
 ## Local release zip

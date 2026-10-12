@@ -1,6 +1,7 @@
 // DLSS Neural Rendering - After Effects 2025 (Win x64) effect plug-in.
 // Classic PF (CPU) path: full-frame RENDER through the in-process dlssnr2fx engine.
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <string>
@@ -84,6 +85,55 @@ static_assert(PF_VERSION(AEX_MAJOR_VERSION, AEX_MINOR_VERSION, AEX_BUG_VERSION, 
 namespace {
 
 std::atomic<uint32_t> gRequestId{0};
+
+// AE can supply a stale/default params[] snapshot on the classic render path.
+// Check out value streams at the render time instead of trusting the UI thread's
+// snapshot. Keep the input world and separately checked-out guide layers intact.
+constexpr int kRenderValueParams[] = {
+    AEX_VIEW, AEX_INTENSITY, AEX_STYLE, AEX_DETAIL, AEX_COLOR, AEX_UI_CORRECTION,
+    AEX_LOCAL_STRUCTURE, AEX_LOCAL_TONE, AEX_SKIN, AEX_GLOBAL_TONE,
+    AEX_MOTION, AEX_MOTION_ENGINE, AEX_MOTION_VIS,
+    AEX_HL_PROTECT, AEX_HL_THRESHOLD, AEX_HL_SOFTNESS, AEX_HL_MIX, AEX_HL_SHOW_MASK,
+    AEX_MVEC_SOURCE, AEX_MVEC_DIR, AEX_MVEC_UNIT, AEX_MVEC_ENC, AEX_MVEC_RANGE,
+    AEX_NVOF_QUALITY, AEX_NVOF_HINT, AEX_DEPTH_SOURCE, AEX_DEPTH_CONV,
+    AEX_DAV2_INTERVAL, AEX_DAV2_EMA, AEX_FG_MODE, AEX_FG_COALESCE,
+    AEX_PRESET, AEX_HDR, AEX_AUTO_MASK, AEX_ADAPTER};
+
+class RenderParamSnapshot {
+ public:
+  explicit RenderParamSnapshot(PF_InData* in_data) : in_data_(in_data) {}
+  RenderParamSnapshot(const RenderParamSnapshot&) = delete;
+  RenderParamSnapshot& operator=(const RenderParamSnapshot&) = delete;
+
+  PF_Err Checkout(PF_ParamDef* supplied[]) {
+    for (int i = 0; i < AEX_NUM_PARAMS; ++i) params_[i] = supplied[i];
+    for (int i : kRenderValueParams) {
+      const PF_Err err = PF_CHECKOUT_PARAM(in_data_, i, in_data_->current_time,
+                                          in_data_->time_step, in_data_->time_scale, &values_[i]);
+      if (err != PF_Err_NONE) {
+        Logf("aex render: parameter checkout failed index=%d err=%d", i, static_cast<int>(err));
+        return err;
+      }
+      checked_[i] = true;
+      params_[i] = &values_[i];
+    }
+    return PF_Err_NONE;
+  }
+
+  ~RenderParamSnapshot() {
+    for (int i : kRenderValueParams) {
+      if (checked_[i]) PF_CHECKIN_PARAM(in_data_, &values_[i]);
+    }
+  }
+
+  PF_ParamDef** data() { return params_.data(); }
+
+ private:
+  PF_InData* in_data_;
+  std::array<PF_ParamDef, AEX_NUM_PARAMS> values_{};
+  std::array<PF_ParamDef*, AEX_NUM_PARAMS + 1> params_{};
+  std::array<bool, AEX_NUM_PARAMS> checked_{};
+};
 
 bool Aborted(PF_InData* in_data) { return (bool)PF_ABORT(in_data); }
 uint32_t InstanceId(PF_InData* in_data) {
@@ -195,7 +245,9 @@ PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data) {
   PF_ADD_FLOAT_SLIDERX("Mix", 0, 1, 0, 1, 1.0, 2, PF_ValueDisplayFlag_NONE, 0, AEX_HL_MIX);
   AEFX_CLR_STRUCT(def);
   def.ui_flags = PF_PUI_INVISIBLE;
-  PF_ADD_CHECKBOXX("Show Mask", FALSE, 0, AEX_HL_SHOW_MASK);
+  // CHECKBOXX clears def, including PF_PUI_INVISIBLE. Keep this legacy stream
+  // hidden while retaining its saved values for older projects.
+  PF_ADD_CHECKBOX("Show Mask", "", FALSE, 0, AEX_HL_SHOW_MASK);
   AEFX_CLR_STRUCT(def);
   PF_END_TOPIC(AEX_GRP_HIGHLIGHT_END);
 
@@ -297,12 +349,18 @@ PF_Err Render(PF_InData* in_data, PF_OutData* out_data, PF_ParamDef* params[], P
     return passthrough();
   }
 
+  RenderParamSnapshot render_params(in_data);
+  err = render_params.Checkout(params);
+  if (err != PF_Err_NONE) return err;
+  params = render_params.data();
+
   const int view = params[AEX_VIEW]->u.pd.value > 0 ? params[AEX_VIEW]->u.pd.value - 1 : 0;
   if (view == 1) {
     Logf("aex render: view source %dx%d", (int)w, (int)h);
     return passthrough();
   }
-  if (view == 4) {
+  if (view == 4 || (view == 0 && params[AEX_HL_SHOW_MASK]->u.bd.value != FALSE)) {
+    Logf("aex render: view highlight mask %dx%d", (int)w, (int)h);
     pix::CopyPassthrough(src, dst);
     pix::RestoreHighlights(src, dst, static_cast<float>(params[AEX_HL_THRESHOLD]->u.fs_d.value),
                            static_cast<float>(params[AEX_HL_SOFTNESS]->u.fs_d.value),

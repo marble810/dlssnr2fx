@@ -117,6 +117,9 @@ if not exist "%AE_SDK_DIR%\Resources\PiPLtool.exe" (
   echo ERROR: PiPLtool.exe not found under %AE_SDK_DIR%\Resources
   exit /b 1
 )
+echo [test] AE live parameter checkout regression
+call test\aex_params_selftest.bat
+if errorlevel 1 exit /b 1
 mkdir build\aex 2>nul
 mkdir dist\aex 2>nul
 set "AEX_CFLAGS=/nologo /O2 /std:c++17 /EHsc /MD /W3 /D_WINDOWS /DNOMINMAX /DWIN32_LEAN_AND_MEAN /I "%AE_SDK_DIR%\Headers" /I "%AE_SDK_DIR%\Headers\SP" /I "%AE_SDK_DIR%\Headers\Win" /I "%AE_SDK_DIR%\Util" /I plugin /I engine"

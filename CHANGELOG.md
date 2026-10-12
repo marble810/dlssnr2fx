@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-12
+
+### Fixed
+
+- After Effects classic rendering now checks out current-time parameter values instead of relying on a stale/default render array; View, look, highlight, guide, and advanced controls share the same render snapshot.
+- Legacy Show Mask stays hidden and its saved values still render a mask. Every value checkout is checked in, including bypasses and partial failures.
+
+### Added
+
+- CPU-only AE parameter regression test (run automatically by `build.bat aex`) and an AE-host View smoke test.
+
 ## [0.1.0] - 2026-09-09
 
 First Windows zip of the in-process DLSS Neural Rendering plug-in. NVIDIA
@@ -31,5 +42,6 @@ First Windows zip of the in-process DLSS Neural Rendering plug-in. NVIDIA
 - OFX hosts that lie about `rowBytes` or committed size on proxy / mipmap renders (Houdini Copernicus and similar): clamp the world to a usable stride, catch pack/copy access violations, and skip tiny or mismatched frames.
 - Depth / motion debug views no longer read past the packed buffer.
 
-[Unreleased]: https://github.com/marble810/dlssnr2fx/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/marble810/dlssnr2fx/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/marble810/dlssnr2fx/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/marble810/dlssnr2fx/releases/tag/v0.1.0
